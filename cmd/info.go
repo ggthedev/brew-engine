@@ -1,3 +1,14 @@
+// Package cmd This file implements the `brew-engine info` subcommand.
+//
+// The info command invokes `brew info --json=v2 <package>`, which returns
+// a JSON payload describing a single formula or cask (installed or not).
+// The raw response is unmarshalled into [contract.BrewInfoV2], and the
+// first result in either the Formulae or Casks bucket is projected into
+// a [contract.FormulaInfo] or [contract.CaskInfo] and emitted as a single
+// Type="info" [contract.Response] on stdout.
+//
+// Precedence: if brew returns results in both buckets (a theoretical name
+// collision between a formula and a cask), the formula takes precedence.
 package cmd
 
 import (
@@ -11,6 +22,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// infoCmd is the Cobra command for `brew-engine info <package>`.
+// It requires exactly one positional argument: the formula or cask name.
+// It emits exactly one JSON line: either a Type="info" [contract.Response]
+// with a [contract.FormulaInfo] or [contract.CaskInfo] payload, or a
+// Type="error" response if the package is not found or brew fails.
 var infoCmd = &cobra.Command{
 	Use:   "info <package>",
 	Short: "Show detailed info for a formula or cask",
@@ -22,6 +38,17 @@ func init() {
 	rootCmd.AddCommand(infoCmd)
 }
 
+// runInfo is the RunE handler for [infoCmd]. It executes
+// `brew info --json=v2 <pkg>`, unmarshals the response, and emits one
+// of the following JSON events to stdout:
+//
+//   - Type="info" with Data=[contract.FormulaInfo] if the package is a formula.
+//   - Type="info" with Data=[contract.CaskInfo] if the package is a cask.
+//   - Type="error" if brew exits non-zero (package not found, network error,
+//     etc.) or if JSON unmarshalling of brew's output fails.
+//
+// The function always returns nil so that Cobra does not attempt additional
+// error formatting; all error reporting goes through [contract.WriteJSON].
 func runInfo(_ *cobra.Command, args []string) error {
 	pkg := args[0]
 
