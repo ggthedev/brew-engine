@@ -56,11 +56,13 @@ Every line written to stdout is a `contract.Response`:
 
 | type | trigger | `data` shape |
 |---|---|---|
-| `list` | `brew-engine list` | `ListData` |
+| `list` | `brew-engine list` | `NamesList` |
 | `info` | `brew-engine info <pkg>` | `FormulaInfo` or `CaskInfo` |
+| `build_mode` | during `install`, on first decisive `==>` line | `BuildModeData` |
 | `progress` | during `install` / `remove` | `ProgressStep` |
 | `done` | install/remove finished (exit 0) | `DoneData` |
 | `error` | any failure | `DoneData` (on exit ≠ 0) or omitted |
+| `event` | `brew-engine watch` detects external mutation | `CacheEvent` |
 
 ### Example responses
 
@@ -77,12 +79,18 @@ Every line written to stdout is a `contract.Response`:
 
 **done**
 ```json
-{"success":true,"type":"done","data":{"package":"wget","exit_code":0}}
+{"success":true,"type":"done","data":{"package":"wget","exit_code":0,"build_mode":"bottle"}}
+```
+
+**build_mode** (emitted once per install, on the first decisive `==>` line)
+```json
+{"success":true,"type":"build_mode","data":{"package":"wget","mode":"bottle"}}
+{"success":true,"type":"build_mode","data":{"package":"wget","mode":"source"}}
 ```
 
 **error**
 ```json
-{"success":false,"type":"error","error":"brew install exited with code 1","data":{"package":"wget","exit_code":1}}
+{"success":false,"type":"error","error":"brew install exited with code 1","data":{"package":"wget","exit_code":1,"build_mode":"source"}}
 ```
 
 ---
@@ -127,15 +135,19 @@ brew-engine/
 ├── Makefile
 ├── cmd/
 │   ├── root.go                 # Cobra root; SilenceErrors/Usage; Execute()
-│   ├── list.go                 # brew info --installed --json=v2 → ListData
-│   ├── info.go                 # brew info --json=v2 <pkg> → FormulaInfo|CaskInfo
+│   ├── list.go                 # Cache-first list; fallback to BuildAndCacheList
+│   ├── info.go                 # Stale-while-revalidate; --force flag
 │   ├── install.go              # delegates to parser.RunInstall
-│   └── remove.go               # delegates to parser.RunRemove
+│   ├── remove.go               # delegates to parser.RunRemove
+│   └── watch.go                # fsnotify watcher; blocks until SIGINT/SIGTERM
 └── internal/
+    ├── cache/
+    │   ├── cache.go            # CacheDir, Read/Write/Invalidate, BuildAndCacheList
+    │   └── watcher.go          # StartWatcher, runWatcher (debounce), rebuildListCache
     ├── contract/
     │   └── types.go            # All JSON structs + WriteJSON helper
     ├── logger/
     │   └── logger.go           # Zap file logger, BREW_TUI_LOG_DIR
     └── parser/
-        └── parser.go           # bufio.Scanner, ANSI strip, ==> progress events
+        └── parser.go           # bufio.Scanner, ANSI strip, build-mode detection, progress events
 ```

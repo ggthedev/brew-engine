@@ -38,6 +38,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync/atomic"
 
 	"github.com/brewexplorer/brew-engine/internal/contract"
 	"github.com/brewexplorer/brew-engine/internal/logger"
@@ -95,6 +96,54 @@ func RunRemove(pkg string, out io.Writer) {
 	runStreamingCommand(pkg, []string{"uninstall", pkg}, out)
 }
 
+// buildMode sentinel values used by the atomic flag below.
+const (
+	buildModeUnknown = int32(0)
+	buildModeBottle  = int32(1)
+	buildModeSource  = int32(2)
+)
+
+// buildModeString converts an atomic sentinel to the JSON string value.
+func buildModeString(m int32) string {
+	switch m {
+	case buildModeBottle:
+		return "bottle"
+	case buildModeSource:
+		return "source"
+	default:
+		return ""
+	}
+}
+
+// detectBuildMode inspects a clean (ANSI-stripped) "==>" line and returns
+// the build mode it implies, or buildModeUnknown when the line is not
+// a decisive indicator.
+//
+// Decisive bottle indicator:
+//
+//	"==> Pouring *.bottle.*"
+//
+// Decisive source indicators:
+//
+//	"==> Installing dependencies for …"
+//	"==> Installing <pkg> dependency: …"
+//	"==> ./configure …", "==> cmake …", "==> make …"
+func detectBuildMode(line string) int32 {
+	lower := strings.ToLower(line)
+	switch {
+	case strings.HasPrefix(lower, "==> pouring") && strings.Contains(lower, ".bottle."):
+		return buildModeBottle
+	case strings.HasPrefix(lower, "==> installing dependencies for"),
+		strings.HasPrefix(lower, "==> installing") && strings.Contains(lower, " dependency:"),
+		strings.HasPrefix(lower, "==> ./configure"),
+		strings.HasPrefix(lower, "==> cmake"),
+		strings.HasPrefix(lower, "==> make"):
+		return buildModeSource
+	default:
+		return buildModeUnknown
+	}
+}
+
 // runStreamingCommand is the shared implementation for [RunInstall] and
 // [RunRemove]. It launches `brew <brewArgs...>`, attaches to its output
 // pipes, and translates the stream into contract JSON events on out.
@@ -146,6 +195,12 @@ func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 		return
 	}
 
+	// buildModeFlag is shared between the two scanStream goroutines.
+	// Only the first goroutine to observe a decisive ==> line will win the
+	// CompareAndSwap and emit the build_mode event; subsequent calls are
+	// no-ops. Using atomic avoids a mutex on the hot scanner path.
+	var buildModeFlag atomic.Int32 // zero value == buildModeUnknown
+
 	done := make(chan struct{}, 2)
 
 	// scanStream is an inline closure that drains a single pipe from the brew
@@ -169,8 +224,25 @@ func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 				)
 			}
 
-			// ── Emit a progress event for `==>` step-header lines only ──────
 			if strings.HasPrefix(clean, "==>") {
+				// ── Build-mode detection (once per install) ──────────────
+				// Try to determine bottle vs. source from this ==> line.
+				// The first goroutine to observe a decisive indicator wins the
+				// CAS; all subsequent calls see a non-zero flag and skip.
+				if detected := detectBuildMode(clean); detected != buildModeUnknown {
+					if buildModeFlag.CompareAndSwap(buildModeUnknown, detected) {
+						contract.WriteJSON(out, contract.Response{
+							Success: true,
+							Type:    "build_mode",
+							Data: contract.BuildModeData{
+								Package: pkg,
+								Mode:    buildModeString(detected),
+							},
+						})
+					}
+				}
+
+				// ── Emit a progress event for every ==> step-header line ─────
 				contract.WriteJSON(out, contract.Response{
 					Success: true,
 					Type:    "progress",
@@ -205,7 +277,11 @@ func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 		}
 	}
 
-	doneData := contract.DoneData{Package: pkg, ExitCode: exitCode}
+	doneData := contract.DoneData{
+		Package:   pkg,
+		ExitCode:  exitCode,
+		BuildMode: buildModeString(buildModeFlag.Load()),
+	}
 
 	if exitCode == 0 {
 		contract.WriteJSON(out, contract.Response{

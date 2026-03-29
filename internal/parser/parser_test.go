@@ -291,6 +291,225 @@ func TestRunStreamingCommand_StderrPipeError_EmitsErrorEvent(t *testing.T) {
 	}
 }
 
+// ── detectBuildMode ──────────────────────────────────────────────────────────
+
+func TestDetectBuildMode_BottlePouring(t *testing.T) {
+	cases := []string{
+		"==> Pouring wget--1.21.4.arm64_ventura.bottle.tar.gz",
+		"==> POURING wget--1.0.bottle.tar.gz", // case-insensitive
+	}
+	for _, line := range cases {
+		if got := detectBuildMode(line); got != buildModeBottle {
+			t.Errorf("detectBuildMode(%q) = %d, want buildModeBottle", line, got)
+		}
+	}
+}
+
+func TestDetectBuildMode_SourceIndicators(t *testing.T) {
+	cases := []string{
+		"==> Installing dependencies for wget: gettext, libidn2",
+		"==> Installing wget dependency: gettext",
+		"==> ./configure --prefix=/opt/homebrew",
+		"==> cmake -DCMAKE_BUILD_TYPE=Release",
+		"==> make install",
+	}
+	for _, line := range cases {
+		if got := detectBuildMode(line); got != buildModeSource {
+			t.Errorf("detectBuildMode(%q) = %d, want buildModeSource", line, got)
+		}
+	}
+}
+
+func TestDetectBuildMode_NonDecisive(t *testing.T) {
+	cases := []string{
+		"==> Downloading https://ghcr.io/v2/homebrew/core/wget",
+		"==> Installing wget",
+		"==> Uninstalling wget",
+		"Some regular output line",
+		"",
+	}
+	for _, line := range cases {
+		if got := detectBuildMode(line); got != buildModeUnknown {
+			t.Errorf("detectBuildMode(%q) = %d, want buildModeUnknown", line, got)
+		}
+	}
+}
+
+func TestBuildModeString(t *testing.T) {
+	if got := buildModeString(buildModeBottle); got != "bottle" {
+		t.Errorf("buildModeString(bottle) = %q, want \"bottle\"", got)
+	}
+	if got := buildModeString(buildModeSource); got != "source" {
+		t.Errorf("buildModeString(source) = %q, want \"source\"", got)
+	}
+	if got := buildModeString(buildModeUnknown); got != "" {
+		t.Errorf("buildModeString(unknown) = %q, want empty", got)
+	}
+}
+
+// ── Build-mode events (bottle path) ──────────────────────────────────────────
+
+func TestRunInstall_BottleInstall_EmitsBuildModeBottle(t *testing.T) {
+	script := "#!/bin/sh\n" +
+		"printf '==> Downloading https://ghcr.io/v2/homebrew/core/wget\\n'\n" +
+		"printf '==> Pouring wget--1.21.4.arm64_ventura.bottle.tar.gz\\n'\n" +
+		"exit 0\n"
+	makeFakeBrew(t, script)
+
+	var buf bytes.Buffer
+	RunInstall("wget", &buf)
+
+	events := decodeLines(t, buf.String())
+
+	var bmEvent *contract.Response
+	for i := range events {
+		if events[i].Type == "build_mode" {
+			e := events[i]
+			bmEvent = &e
+			break
+		}
+	}
+	if bmEvent == nil {
+		t.Fatalf("no build_mode event in output:\n%s", buf.String())
+	}
+	if !bmEvent.Success {
+		t.Error("build_mode event should have success=true")
+	}
+
+	dataBytes, _ := json.Marshal(bmEvent.Data)
+	var bmd contract.BuildModeData
+	if err := json.Unmarshal(dataBytes, &bmd); err != nil {
+		t.Fatalf("cannot decode BuildModeData: %v", err)
+	}
+	if bmd.Package != "wget" {
+		t.Errorf("BuildModeData.Package = %q, want \"wget\"", bmd.Package)
+	}
+	if bmd.Mode != "bottle" {
+		t.Errorf("BuildModeData.Mode = %q, want \"bottle\"", bmd.Mode)
+	}
+}
+
+func TestRunInstall_BottleInstall_DoneCarriesBuildMode(t *testing.T) {
+	script := "#!/bin/sh\n" +
+		"printf '==> Pouring wget--1.21.4.arm64_ventura.bottle.tar.gz\\n'\n" +
+		"exit 0\n"
+	makeFakeBrew(t, script)
+
+	var buf bytes.Buffer
+	RunInstall("wget", &buf)
+
+	events := decodeLines(t, buf.String())
+	doneEvent := events[len(events)-1]
+	if doneEvent.Type != "done" {
+		t.Fatalf("last event should be done, got %s", doneEvent.Type)
+	}
+
+	dataBytes, _ := json.Marshal(doneEvent.Data)
+	var dd contract.DoneData
+	if err := json.Unmarshal(dataBytes, &dd); err != nil {
+		t.Fatalf("cannot decode DoneData: %v", err)
+	}
+	if dd.BuildMode != "bottle" {
+		t.Errorf("DoneData.BuildMode = %q, want \"bottle\"", dd.BuildMode)
+	}
+}
+
+// ── Build-mode events (source path) ──────────────────────────────────────────
+
+func TestRunInstall_SourceBuild_EmitsBuildModeSource(t *testing.T) {
+	script := "#!/bin/sh\n" +
+		"printf '==> Installing dependencies for wget: gettext\\n'\n" +
+		"printf '==> Installing wget dependency: gettext\\n'\n" +
+		"printf '==> ./configure --prefix=/opt/homebrew\\n'\n" +
+		"exit 0\n"
+	makeFakeBrew(t, script)
+
+	var buf bytes.Buffer
+	RunInstall("wget", &buf)
+
+	events := decodeLines(t, buf.String())
+
+	// Exactly one build_mode event must be emitted (deduplicated by CAS).
+	var bmEvents []contract.Response
+	for _, e := range events {
+		if e.Type == "build_mode" {
+			bmEvents = append(bmEvents, e)
+		}
+	}
+	if len(bmEvents) != 1 {
+		t.Fatalf("expected exactly 1 build_mode event, got %d:\n%s", len(bmEvents), buf.String())
+	}
+
+	dataBytes, _ := json.Marshal(bmEvents[0].Data)
+	var bmd contract.BuildModeData
+	if err := json.Unmarshal(dataBytes, &bmd); err != nil {
+		t.Fatalf("cannot decode BuildModeData: %v", err)
+	}
+	if bmd.Mode != "source" {
+		t.Errorf("BuildModeData.Mode = %q, want \"source\"", bmd.Mode)
+	}
+}
+
+func TestRunInstall_SourceBuild_DoneCarriesBuildMode(t *testing.T) {
+	script := "#!/bin/sh\n" +
+		"printf '==> Installing dependencies for wget: gettext\\n'\n" +
+		"exit 0\n"
+	makeFakeBrew(t, script)
+
+	var buf bytes.Buffer
+	RunInstall("wget", &buf)
+
+	events := decodeLines(t, buf.String())
+	doneEvent := events[len(events)-1]
+	if doneEvent.Type != "done" {
+		t.Fatalf("last event should be done, got %s", doneEvent.Type)
+	}
+
+	dataBytes, _ := json.Marshal(doneEvent.Data)
+	var dd contract.DoneData
+	if err := json.Unmarshal(dataBytes, &dd); err != nil {
+		t.Fatalf("cannot decode DoneData: %v", err)
+	}
+	if dd.BuildMode != "source" {
+		t.Errorf("DoneData.BuildMode = %q, want \"source\"", dd.BuildMode)
+	}
+}
+
+func TestRunInstall_NoBuildModeDetected_DoneHasEmptyBuildMode(t *testing.T) {
+	makeFakeBrew(t, "#!/bin/sh\nprintf '==> Downloading wget\\n'\nexit 0\n")
+
+	var buf bytes.Buffer
+	RunInstall("wget", &buf)
+
+	events := decodeLines(t, buf.String())
+	for _, e := range events {
+		if e.Type == "build_mode" {
+			t.Error("unexpected build_mode event for non-decisive output")
+		}
+	}
+
+	doneEvent := events[len(events)-1]
+	dataBytes, _ := json.Marshal(doneEvent.Data)
+	var dd contract.DoneData
+	_ = json.Unmarshal(dataBytes, &dd)
+	if dd.BuildMode != "" {
+		t.Errorf("DoneData.BuildMode should be empty, got %q", dd.BuildMode)
+	}
+}
+
+func TestRunRemove_NoBuildModeEvent(t *testing.T) {
+	makeFakeBrew(t, "#!/bin/sh\nprintf '==> Uninstalling wget\\n'\nexit 0\n")
+
+	var buf bytes.Buffer
+	RunRemove("wget", &buf)
+
+	for _, e := range decodeLines(t, buf.String()) {
+		if e.Type == "build_mode" {
+			t.Error("remove operation must not emit a build_mode event")
+		}
+	}
+}
+
 // ── DoneData payload verification ────────────────────────────────────────────
 
 func TestRunInstall_DoneData_ContainsPackageAndExitCode(t *testing.T) {

@@ -45,6 +45,9 @@ import (
 //     omitted; Success is always false for this type.
 //   - "event"    — Data is [CacheEvent]; emitted by the cache watcher
 //     when a background rebuild completes.
+//   - "build_mode" — Data is [BuildModeData]; emitted once per install
+//     operation, as soon as the parser determines whether Homebrew is
+//     pouring a pre-compiled bottle or compiling from source.
 type Response struct {
 	// Success indicates whether the underlying brew operation succeeded.
 	// When false, Error is guaranteed to be non-empty.
@@ -52,7 +55,7 @@ type Response struct {
 
 	// Type identifies the shape of the Data field. See the list of valid
 	// values in the type-level documentation.
-	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error" | "event"
+	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error" | "event" | "build_mode"
 
 	// IsStale is true when the response was served from an expired cache
 	// entry. A fresh response will follow on stdout once the background
@@ -291,6 +294,30 @@ type CacheEvent struct {
 
 // ─── State-changing command types (install / remove) ─────────────────────────
 
+// BuildModeData is the Data payload carried by a [Response] with
+// Type="build_mode". It is emitted exactly once per install operation,
+// as soon as the parser can determine from the brew output stream whether
+// Homebrew is pouring a pre-compiled bottle or building from source.
+//
+// Mode values:
+//
+//   - "bottle" — Homebrew is pouring a cached, pre-compiled binary.
+//     Expected duration: a few seconds.
+//   - "source" — No bottle is available; Homebrew will compile the
+//     formula (and possibly its dependencies) from source.
+//     Expected duration: minutes to tens of minutes.
+//
+// The frontend should use this event to adjust its progress UI:
+// a spinner is appropriate for "bottle"; a progress bar with a
+// "this may take several minutes" warning suits "source".
+type BuildModeData struct {
+	// Package is the name of the formula being installed.
+	Package string `json:"package"`
+
+	// Mode is either "bottle" or "source".
+	Mode string `json:"mode"`
+}
+
 // ProgressStep is the Data payload carried by a [Response] with
 // Type="progress". One ProgressStep is emitted for every line that begins
 // with "==>" in the brew subprocess output, giving the frontend a
@@ -316,4 +343,10 @@ type DoneData struct {
 	// ExitCode is the OS-level exit code of the brew subprocess.
 	// 0 indicates success; any other value indicates failure.
 	ExitCode int `json:"exit_code"`
+
+	// BuildMode records how the package was installed: "bottle" for a
+	// pre-compiled binary or "source" for a from-source compilation.
+	// Omitted when empty (e.g. for remove operations or when the mode
+	// could not be determined before the process exited).
+	BuildMode string `json:"build_mode,omitempty"`
 }

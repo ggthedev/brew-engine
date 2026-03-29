@@ -30,6 +30,7 @@ step-by-step guide to adding a new subcommand.
     - [Type taxonomy](#type-taxonomy)
     - [`is_stale` flag](#is_stale-flag)
     - [`"event"` stream](#event-stream)
+    - [`"build_mode"` event](#build_mode-event)
   - [6. The Caching Layer — End-to-End Flow](#6-the-caching-layer--end-to-end-flow)
     - [`list` — infinite TTL, watcher-invalidated](#list--infinite-ttl-watcher-invalidated)
     - [`info` — 24h TTL, stale-while-revalidate](#info--24h-ttl-stale-while-revalidate)
@@ -239,13 +240,14 @@ type Response struct { Success bool; Type string; IsStale bool; Error string; Da
 func WriteJSON(w io.Writer, r Response)
 
 // UI types (Data payloads sent to frontends)
-type FormulaInfo struct { ... }
-type CaskInfo     struct { ... }
-type ListData     struct { Formulae []FormulaInfo; Casks []CaskInfo; Total int }
-type NamesList    struct { Formulae []string; Casks []string; Total int }
-type CacheEvent   struct { Action string; Target string }
-type ProgressStep struct { Package string; Step string }
-type DoneData     struct { Package string; ExitCode int }
+type FormulaInfo    struct { ... }
+type CaskInfo       struct { ... }
+type ListData       struct { Formulae []FormulaInfo; Casks []CaskInfo; Total int }
+type NamesList      struct { Formulae []string; Casks []string; Total int }
+type CacheEvent     struct { Action string; Target string }
+type BuildModeData  struct { Package string; Mode string }          // "bottle" | "source"
+type ProgressStep   struct { Package string; Step string }
+type DoneData       struct { Package string; ExitCode int; BuildMode string }
 ```
 
 ### `internal/cache`
@@ -353,9 +355,10 @@ JSON object**.
 | --- | --- | --- |
 | `"list"` | `NamesList` | `cmd/list.go` |
 | `"info"` | `FormulaInfo` or `CaskInfo` | `cmd/info.go` |
+| `"build_mode"` | `BuildModeData` | `internal/parser` (once per install, on first decisive `==>` line) |
 | `"progress"` | `ProgressStep` | `internal/parser` (during install/remove) |
-| `"done"` | `DoneData` | `internal/parser` (on exit 0) |
-| `"error"` | `DoneData` (optional) | any layer on failure |
+| `"done"` | `DoneData` (with `build_mode` field) | `internal/parser` (on exit 0) |
+| `"error"` | `DoneData` (with `build_mode` field, optional) | any layer on failure |
 | `"event"` | `CacheEvent` | `internal/cache` watcher on rebuild |
 
 ### `is_stale` flag
@@ -375,6 +378,44 @@ background watcher detects an external Homebrew mutation:
 ```
 
 The frontend should treat this as a signal to re-invoke `brew-engine list`.
+
+### `"build_mode"` event
+
+Emitted **at most once** per install operation, by `internal/parser`, as soon
+as the first decisive `==>` line is seen in the brew output stream.
+
+```json
+{"success":true,"type":"build_mode","data":{"package":"wget","mode":"bottle"}}
+{"success":true,"type":"build_mode","data":{"package":"wget","mode":"source"}}
+```
+
+| `mode` | Meaning | UI guidance |
+| --- | --- | --- |
+| `"bottle"` | Pre-compiled binary is being poured | Spinner; expect ~5 s |
+| `"source"` | No bottle available; compiling from source | Progress bar + "may take several minutes" warning |
+
+The terminal `"done"` / `"error"` event also carries `build_mode` in its
+`DoneData` payload so the frontend can record or display a post-install
+summary without tracking state from an earlier event:
+
+```json
+{"success":true,"type":"done","data":{"package":"wget","exit_code":0,"build_mode":"source"}}
+```
+
+**Detection heuristics** (case-insensitive `==>` line matching in `internal/parser`):
+
+| Pattern | Detected mode |
+| --- | --- |
+| `==> Pouring *.bottle.*` | `bottle` |
+| `==> Installing dependencies for …` | `source` |
+| `==> Installing <pkg> dependency: …` | `source` |
+| `==> ./configure …` | `source` |
+| `==> cmake …` | `source` |
+| `==> make …` | `source` |
+
+All other `==>` lines (e.g. `==> Downloading`, `==> Installing wget`) are
+non-decisive and do not trigger the event. If the process exits before any
+decisive line is observed, `build_mode` is omitted from `DoneData`.
 
 ---
 
