@@ -115,33 +115,39 @@ func buildModeString(m int32) string {
 	}
 }
 
+// buildModeRule pairs a required line prefix with an optional substring that
+// must also be present, and the build mode to return when both match.
+// Rules are evaluated in declaration order; the first match wins.
+type buildModeRule struct {
+	prefix   string
+	contains string
+	mode     int32
+}
+
+// buildModeRules is the ordered set of heuristics used by [detectBuildMode].
+// To support a new brew output pattern, append a row here — no other code
+// needs to change.
+var buildModeRules = []buildModeRule{
+	{prefix: "==> pouring", contains: ".bottle.", mode: buildModeBottle},
+	{prefix: "==> installing dependencies for", mode: buildModeSource},
+	{prefix: "==> installing", contains: " dependency:", mode: buildModeSource},
+	{prefix: "==> ./configure", mode: buildModeSource},
+	{prefix: "==> cmake", mode: buildModeSource},
+	{prefix: "==> make", mode: buildModeSource},
+}
+
 // detectBuildMode inspects a clean (ANSI-stripped) "==>" line and returns
-// the build mode it implies, or buildModeUnknown when the line is not
-// a decisive indicator.
-//
-// Decisive bottle indicator:
-//
-//	"==> Pouring *.bottle.*"
-//
-// Decisive source indicators:
-//
-//	"==> Installing dependencies for …"
-//	"==> Installing <pkg> dependency: …"
-//	"==> ./configure …", "==> cmake …", "==> make …"
+// the build mode it implies, or buildModeUnknown when no rule matches.
 func detectBuildMode(line string) int32 {
 	lower := strings.ToLower(line)
-	switch {
-	case strings.HasPrefix(lower, "==> pouring") && strings.Contains(lower, ".bottle."):
-		return buildModeBottle
-	case strings.HasPrefix(lower, "==> installing dependencies for"),
-		strings.HasPrefix(lower, "==> installing") && strings.Contains(lower, " dependency:"),
-		strings.HasPrefix(lower, "==> ./configure"),
-		strings.HasPrefix(lower, "==> cmake"),
-		strings.HasPrefix(lower, "==> make"):
-		return buildModeSource
-	default:
-		return buildModeUnknown
+	for _, r := range buildModeRules {
+		if strings.HasPrefix(lower, r.prefix) {
+			if r.contains == "" || strings.Contains(lower, r.contains) {
+				return r.mode
+			}
+		}
 	}
+	return buildModeUnknown
 }
 
 // runStreamingCommand is the shared implementation for [RunInstall] and

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -35,6 +36,13 @@ import (
 // to bypass the cache, delete the stale entry, and fetch fresh data
 // synchronously before re-caching.
 var infoForceFlag bool
+
+// execBrewInfo is the function used to run `brew info --json=v2 <pkg>`.
+// It is a package-level variable so tests can inject a fake implementation
+// without spawning a real brew process or manipulating PATH.
+var execBrewInfo = func(pkg string) ([]byte, error) {
+	return exec.Command("brew", "info", "--json=v2", pkg).Output()
+}
 
 // infoCmd is the Cobra command for `brew-engine info <package>`.
 // It requires exactly one positional argument: the formula or cask name.
@@ -106,7 +114,7 @@ func runInfo(_ *cobra.Command, args []string) error {
 // The returned bytes are suitable for writing directly to stdout and for
 // storing in the cache.
 func buildInfoResponse(pkg string) ([]byte, error) {
-	out, err := exec.Command("brew", "info", "--json=v2", pkg).Output()
+	out, err := execBrewInfo(pkg)
 	if err != nil {
 		return nil, fmt.Errorf("brew info failed for %q: %w", pkg, err)
 	}
@@ -170,7 +178,7 @@ func buildInfoResponse(pkg string) ([]byte, error) {
 // fetchAndEmitInfo fetches fresh package data via [buildInfoResponse], writes
 // the result to the cache, and emits it to out. On error it emits a
 // Type="error" response.
-func fetchAndEmitInfo(pkg string, out *os.File) {
+func fetchAndEmitInfo(pkg string, out io.Writer) {
 	respBytes, err := buildInfoResponse(pkg)
 	if err != nil {
 		contract.WriteJSON(out, contract.Response{
