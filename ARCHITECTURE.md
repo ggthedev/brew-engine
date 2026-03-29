@@ -8,25 +8,45 @@ step-by-step guide to adding a new subcommand.
 
 ## Table of Contents
 
-1. [Layered Overview](#1-layered-overview)
-2. [Layer Responsibilities](#2-layer-responsibilities)
-   - 2.1 [Entry point — `main`](#21-entry-point--main)
-   - 2.2 [Command layer — `cmd/`](#22-command-layer--cmd)
-   - 2.3 [Cache layer — `internal/cache`](#23-cache-layer--internalcache)
-   - 2.4 [Contract layer — `internal/contract`](#24-contract-layer--internalcontract)
-   - 2.5 [Parser layer — `internal/parser`](#25-parser-layer--internalparser)
-   - 2.6 [Logger layer — `internal/logger`](#26-logger-layer--internallogger)
-3. [Public Interfaces](#3-public-interfaces)
-4. [Private / Injectable Interfaces](#4-private--injectable-interfaces)
-5. [The JSON stdout Contract](#5-the-json-stdout-contract)
-6. [The Caching Layer — End-to-End Flow](#6-the-caching-layer--end-to-end-flow)
-7. [Adding a New Subcommand](#7-adding-a-new-subcommand)
+- [brew-engine — Architecture Reference](#brew-engine--architecture-reference)
+  - [Table of Contents](#table-of-contents)
+  - [1. Layered Overview](#1-layered-overview)
+  - [2. Layer Responsibilities](#2-layer-responsibilities)
+    - [2.1 Entry point — `main`](#21-entry-point--main)
+    - [2.2 Command layer — `cmd/`](#22-command-layer--cmd)
+      - [The `Execute` safety net](#the-execute-safety-net)
+    - [2.3 Cache layer — `internal/cache`](#23-cache-layer--internalcache)
+    - [2.4 Contract layer — `internal/contract`](#24-contract-layer--internalcontract)
+    - [2.5 Parser layer — `internal/parser`](#25-parser-layer--internalparser)
+    - [2.6 Logger layer — `internal/logger`](#26-logger-layer--internallogger)
+  - [3. Public Interfaces](#3-public-interfaces)
+    - [`internal/contract`](#internalcontract)
+    - [`internal/cache`](#internalcache)
+    - [`internal/logger`](#internallogger)
+    - [`internal/parser`](#internalparser)
+    - [`cmd`](#cmd)
+  - [4. Private / Injectable Interfaces](#4-private--injectable-interfaces)
+  - [5. The JSON stdout Contract](#5-the-json-stdout-contract)
+    - [Type taxonomy](#type-taxonomy)
+    - [`is_stale` flag](#is_stale-flag)
+    - [`"event"` stream](#event-stream)
+  - [6. The Caching Layer — End-to-End Flow](#6-the-caching-layer--end-to-end-flow)
+    - [`list` — infinite TTL, watcher-invalidated](#list--infinite-ttl-watcher-invalidated)
+    - [`info` — 24h TTL, stale-while-revalidate](#info--24h-ttl-stale-while-revalidate)
+  - [7. Adding a New Subcommand](#7-adding-a-new-subcommand)
+    - [Step 1 — Define the contract types (if needed)](#step-1--define-the-contract-types-if-needed)
+    - [Step 2 — Create `cmd/upgrade.go`](#step-2--create-cmdupgradego)
+    - [Step 3 — If the command streams output, use `internal/parser`](#step-3--if-the-command-streams-output-use-internalparser)
+    - [Step 4 — If the command needs caching, use `internal/cache`](#step-4--if-the-command-needs-caching-use-internalcache)
+    - [Step 5 — Add injectable `execCommand` if the command shells out](#step-5--add-injectable-execcommand-if-the-command-shells-out)
+    - [Step 6 — Write tests in `cmd/upgrade_test.go`](#step-6--write-tests-in-cmdupgrade_testgo)
+    - [Step 7 — Update `cmd/root.go` doc comment and `README.md`](#step-7--update-cmdrootgo-doc-comment-and-readmemd)
 
 ---
 
 ## 1. Layered Overview
 
-```
+``` go
 ┌──────────────────────────────────────────────────────────┐
 │                      Frontend (UI)                       │
 │          SwiftUI app            Bubble Tea TUI           │
@@ -63,6 +83,8 @@ step-by-step guide to adding a new subcommand.
               exec.Command("brew", ...)
 ```
 
+go
+
 **Invariant: `os.Stdout` receives only complete, newline-terminated
 `contract.Response` JSON objects. Nothing else may be written to stdout
 anywhere in the codebase.**
@@ -75,7 +97,7 @@ anywhere in the codebase.**
 
 `main.go` is intentionally minimal:
 
-```
+``` go
 logger.Init()   // opens the log file; sets logger.Sugar and logger.Raw
 defer logger.Sync()
 cmd.Execute()   // hands control to Cobra; never returns on success
@@ -96,7 +118,7 @@ Every `RunE` handler **must**:
 - Emit a `Type="error"` response if the brew operation fails.
 
 | File | Subcommand | Strategy |
-|---|---|---|
+| --- | --- | --- |
 | `root.go` | (root) | Emits JSON error on invocation with no subcommand; sets `SilenceErrors`/`SilenceUsage` |
 | `list.go` | `list` | Cache-first (infinite TTL); falls back to `cache.BuildAndCacheList` |
 | `info.go` | `info <pkg>` | Stale-while-revalidate (24h TTL); `--force` / `-f` bypasses cache |
@@ -119,7 +141,7 @@ the framework boundary.
 Two files, two concerns:
 
 | File | Concern |
-|---|---|
+| --- | --- |
 | `cache.go` | Read/write/invalidate flat JSON files; `BuildAndCacheList` orchestration |
 | `watcher.go` | `fsnotify` watcher lifecycle, debounce loop, background list rebuild |
 
@@ -131,7 +153,7 @@ Two files, two concerns:
 
 **Namespace layout on disk:**
 
-```
+``` go
 $BREW_TUI_CACHE_DIR/
 ├── list.json          # monolithic NamesList snapshot; infinite TTL
 └── info/
@@ -151,7 +173,7 @@ re-serialisation.
 The single source of truth for the wire format. Divided into four groups:
 
 | Group | Types | Visibility |
-|---|---|---|
+| --- | --- | --- |
 | **Envelope** | `Response`, `WriteJSON` | Public; all output passes through `WriteJSON` |
 | **UI types** | `FormulaInfo`, `CaskInfo`, `ListData`, `NamesList`, `CacheEvent` | Public; these are the shapes the frontend decodes |
 | **Raw types** | `BrewInfoV2`, `RawFormula`, `RawCask`, `RawVersions`, `RawInstalled` | Public (exported for tests) but **never serialised to stdout**; internal unmarshal targets only |
@@ -187,7 +209,7 @@ tests override it to inject fake binaries without touching `PATH`.
 Wraps `go.uber.org/zap`. Provides two package-level singletons:
 
 | Var | Type | Use |
-|---|---|---|
+| --- | --- | --- |
 | `logger.Sugar` | `*zap.SugaredLogger` | Structured key-value logging in commands and cache |
 | `logger.Raw` | `*zap.Logger` | Raw structured logging in parser (not via sugar) |
 
@@ -287,7 +309,7 @@ specifically to enable test injection without modifying `PATH` or the
 filesystem:
 
 | Variable | Package | Default | Overridden in tests to… |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `execCommand` | `internal/cache` | `exec.Command` | Inject a fake `brew` binary |
 | `userHomeDir` | `internal/cache` | `os.UserHomeDir` | Simulate a missing home directory |
 | `newFSWatcher` | `internal/cache` | `fsnotify.NewWatcher` | Simulate watcher creation failure |
@@ -321,14 +343,14 @@ Every response — success, error, progress, or cache event — is an instance
 of `contract.Response` serialised as a **single, complete, newline-terminated
 JSON object**.
 
-```
+``` go
 {"success":true|false,"type":"<type>","is_stale":true,"error":"<msg>","data":{…}}\n
 ```
 
 ### Type taxonomy
 
 | `type` | `data` shape | Emitted by |
-|---|---|---|
+| --- | --- | --- |
 | `"list"` | `NamesList` | `cmd/list.go` |
 | `"info"` | `FormulaInfo` or `CaskInfo` | `cmd/info.go` |
 | `"progress"` | `ProgressStep` | `internal/parser` (during install/remove) |
@@ -360,7 +382,7 @@ The frontend should treat this as a signal to re-invoke `brew-engine list`.
 
 ### `list` — infinite TTL, watcher-invalidated
 
-```
+``` go
 brew-engine list
      │
      ├─ cache.ReadList()
@@ -387,7 +409,7 @@ brew-engine watch  (long-running)
 
 ### `info` — 24h TTL, stale-while-revalidate
 
-```
+``` go
 brew-engine info wget
      │
      ├─ --force flag?  ──► cache.InvalidateInfo("wget")
@@ -488,7 +510,7 @@ func RunUpgrade(pkg string, out io.Writer) {
 ### Step 4 — If the command needs caching, use `internal/cache`
 
 | Cache need | Function to use |
-|---|---|
+| --- | --- |
 | Serve previously-built list data | `cache.ReadList` / `cache.WriteList` |
 | Serve per-package data with a TTL | `cache.ReadInfo` / `cache.WriteInfo` / `cache.InvalidateInfo` |
 | Evict and rebuild the list | `cache.InvalidateList` + `cache.BuildAndCacheList` |
@@ -511,7 +533,7 @@ Override it in tests the same way the existing commands do with `fakeBrew`.
 Minimum coverage targets (matching the existing suite):
 
 | Scenario | What to test |
-|---|---|
+| --- | --- |
 | Success | Correct JSON type and data fields on stdout |
 | `brew` exits non-zero | `Type="error"` response emitted; `RunE` returns `nil` |
 | Cache hit (if applicable) | Bytes served directly; `brew` not invoked |
