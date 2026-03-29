@@ -2,8 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/brewexplorer/brew-engine/internal/cache"
 	"github.com/brewexplorer/brew-engine/internal/contract"
 	"github.com/brewexplorer/brew-engine/internal/logger"
 )
@@ -11,6 +15,7 @@ import (
 // ── runInfo ──────────────────────────────────────────────────────────────────
 
 func TestRunInfo_Formula_Installed(t *testing.T) {
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	makeFakeBrew(t, "#!/bin/sh\nprintf '"+formulaInfoJSON+"'\nexit 0\n")
 
 	out := captureStdout(t, func() {
@@ -43,6 +48,7 @@ func TestRunInfo_Formula_Installed(t *testing.T) {
 }
 
 func TestRunInfo_Formula_NotInstalled(t *testing.T) {
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	makeFakeBrew(t, "#!/bin/sh\nprintf '"+formulaInfoNotInstalledJSON+"'\nexit 0\n")
 
 	out := captureStdout(t, func() {
@@ -63,6 +69,7 @@ func TestRunInfo_Formula_NotInstalled(t *testing.T) {
 }
 
 func TestRunInfo_Cask_WithName(t *testing.T) {
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	makeFakeBrew(t, "#!/bin/sh\nprintf '"+caskInfoJSON+"'\nexit 0\n")
 
 	out := captureStdout(t, func() {
@@ -91,6 +98,7 @@ func TestRunInfo_Cask_WithName(t *testing.T) {
 }
 
 func TestRunInfo_Cask_EmptyNameFallsBackToToken(t *testing.T) {
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	makeFakeBrew(t, "#!/bin/sh\nprintf '"+caskInfoNoNameJSON+"'\nexit 0\n")
 
 	out := captureStdout(t, func() {
@@ -108,6 +116,7 @@ func TestRunInfo_Cask_EmptyNameFallsBackToToken(t *testing.T) {
 }
 
 func TestRunInfo_BrewError_EmitsErrorResponse(t *testing.T) {
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	makeFakeBrew(t, "#!/bin/sh\nexit 1\n")
 
 	out := captureStdout(t, func() {
@@ -127,6 +136,7 @@ func TestRunInfo_BrewError_EmitsErrorResponse(t *testing.T) {
 }
 
 func TestRunInfo_InvalidJSON_EmitsErrorResponse(t *testing.T) {
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	makeFakeBrew(t, "#!/bin/sh\nprintf 'this is not json'\nexit 0\n")
 
 	out := captureStdout(t, func() {
@@ -140,6 +150,7 @@ func TestRunInfo_InvalidJSON_EmitsErrorResponse(t *testing.T) {
 }
 
 func TestRunInfo_NotFound_EmitsErrorResponse(t *testing.T) {
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	// brew succeeds but returns empty formulae and casks
 	makeFakeBrew(t, "#!/bin/sh\nprintf '"+emptyInfoJSON+"'\nexit 0\n")
 
@@ -154,7 +165,7 @@ func TestRunInfo_NotFound_EmitsErrorResponse(t *testing.T) {
 }
 
 func TestRunInfo_WithLogger_CoversLoggerBranch(t *testing.T) {
-	// Initialise the logger so the logger.Sugar != nil branch in runInfo is hit.
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	rawOld, sugarOld := logger.Raw, logger.Sugar
 	t.Cleanup(func() { logger.Raw = rawOld; logger.Sugar = sugarOld })
 
@@ -176,6 +187,7 @@ func TestRunInfo_WithLogger_CoversLoggerBranch(t *testing.T) {
 }
 
 func TestRunInfo_AlwaysReturnsNilToCobraFromRunE(t *testing.T) {
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	makeFakeBrew(t, "#!/bin/sh\nexit 1\n")
 
 	captureStdout(t, func() {
@@ -184,4 +196,181 @@ func TestRunInfo_AlwaysReturnsNilToCobraFromRunE(t *testing.T) {
 			t.Errorf("RunE handler must return nil; got %v", err)
 		}
 	})
+}
+
+// ── cache paths ───────────────────────────────────────────────────────────────
+
+func TestRunInfo_FreshCacheHit_ServesFromFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BREW_TUI_CACHE_DIR", dir)
+
+	// Pre-seed a fresh cache entry.
+	payload := `{"success":true,"type":"info","data":{"name":"wget","full_name":"wget","tap":"","desc":"","homepage":"","version":"","installed":false,"outdated":false,"pinned":false}}` + "\n"
+	if err := cache.WriteInfo("wget", []byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+
+	// No brew in PATH — if brew were invoked the test would error.
+	t.Setenv("PATH", t.TempDir())
+
+	out := captureStdout(t, func() { _ = runInfo(nil, []string{"wget"}) })
+
+	if out != payload {
+		t.Errorf("expected raw cache bytes, got:\n%s", out)
+	}
+}
+
+func TestRunInfo_FreshCacheHit_WithLogger_CoversDebugw(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BREW_TUI_CACHE_DIR", dir)
+	rawOld, sugarOld := logger.Raw, logger.Sugar
+	t.Cleanup(func() { logger.Raw = rawOld; logger.Sugar = sugarOld })
+	t.Setenv("BREW_TUI_LOG_DIR", t.TempDir())
+	if err := logger.Init(); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := `{"success":true,"type":"info","data":{"name":"wget","full_name":"wget","tap":"","desc":"","homepage":"","version":"","installed":false,"outdated":false,"pinned":false}}` + "\n"
+	if err := cache.WriteInfo("wget", []byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", t.TempDir())
+
+	out := captureStdout(t, func() { _ = runInfo(nil, []string{"wget"}) })
+
+	if out != payload {
+		t.Errorf("expected raw cache bytes with logger active, got:\n%s", out)
+	}
+}
+
+func TestRunInfo_FreshCacheHit_WritesCacheFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BREW_TUI_CACHE_DIR", dir)
+	makeFakeBrew(t, "#!/bin/sh\nprintf '"+formulaInfoJSON+"'\nexit 0\n")
+
+	captureStdout(t, func() { _ = runInfo(nil, []string{"wget"}) })
+
+	if _, err := os.Stat(filepath.Join(dir, "info", "wget.json")); os.IsNotExist(err) {
+		t.Error("expected info/wget.json to be created after cache miss")
+	}
+}
+
+func TestRunInfo_StaleCacheHit_EmitsTwoResponses(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BREW_TUI_CACHE_DIR", dir)
+	makeFakeBrew(t, "#!/bin/sh\nprintf '"+formulaInfoJSON+"'\nexit 0\n")
+
+	// Write a cache entry and then back-date it to 25 hours ago.
+	payload := `{"success":true,"type":"info","data":{"name":"wget","full_name":"wget","tap":"","desc":"","homepage":"","version":"","installed":false,"outdated":false,"pinned":false}}` + "\n"
+	if err := cache.WriteInfo("wget", []byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "info", "wget.json")
+	past := time.Now().Add(-25 * time.Hour)
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { _ = runInfo(nil, []string{"wget"}) })
+
+	responses := decodeResponses(t, out)
+	if len(responses) != 2 {
+		t.Fatalf("stale path must emit 2 responses (stale + fresh), got %d:\n%s", len(responses), out)
+	}
+	if !responses[0].IsStale {
+		t.Error("first response must have is_stale=true")
+	}
+	if responses[1].IsStale {
+		t.Error("second (fresh) response must have is_stale=false/omitted")
+	}
+	if !responses[1].Success || responses[1].Type != "info" {
+		t.Errorf("fresh response must be a success info, got success=%v type=%s", responses[1].Success, responses[1].Type)
+	}
+}
+
+func TestRunInfo_ForceFlag_BypassesCache(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BREW_TUI_CACHE_DIR", dir)
+	makeFakeBrew(t, "#!/bin/sh\nprintf '"+formulaInfoJSON+"'\nexit 0\n")
+
+	// Write a fresh (non-stale) cache entry with stale-marker payload.
+	stalePayload := `{"success":true,"type":"info","is_stale":true,"data":{"name":"stale","full_name":"stale","tap":"","desc":"","homepage":"","version":"","installed":false,"outdated":false,"pinned":false}}` + "\n"
+	if err := cache.WriteInfo("wget", []byte(stalePayload)); err != nil {
+		t.Fatal(err)
+	}
+
+	old := infoForceFlag
+	infoForceFlag = true
+	t.Cleanup(func() { infoForceFlag = old })
+
+	out := captureStdout(t, func() { _ = runInfo(nil, []string{"wget"}) })
+
+	responses := decodeResponses(t, out)
+	if len(responses) != 1 {
+		t.Fatalf("--force must emit exactly 1 fresh response, got %d: %s", len(responses), out)
+	}
+	if responses[0].IsStale {
+		t.Error("--force response must not have is_stale=true")
+	}
+	dataBytes, _ := json.Marshal(responses[0].Data)
+	var fi contract.FormulaInfo
+	if err := json.Unmarshal(dataBytes, &fi); err != nil {
+		t.Fatalf("expected FormulaInfo data: %v", err)
+	}
+	if fi.Name != "wget" {
+		t.Errorf("expected fresh wget data, got name=%s", fi.Name)
+	}
+}
+
+// ── injectIsStale ─────────────────────────────────────────────────────────────
+
+func TestInjectIsStale_SetsFlag(t *testing.T) {
+	input := `{"success":true,"type":"info","data":{"name":"wget"}}` + "\n"
+	out := injectIsStale([]byte(input))
+
+	var r contract.Response
+	if err := json.Unmarshal([]byte(out[:len(out)-1]), &r); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if !r.IsStale {
+		t.Error("injectIsStale must set IsStale=true")
+	}
+}
+
+func TestInjectIsStale_MalformedInput_ReturnsOriginal(t *testing.T) {
+	input := []byte("not-json\n")
+	out := injectIsStale(input)
+	if string(out) != string(input) {
+		t.Error("malformed input must be returned unchanged")
+	}
+}
+
+func TestRunInfo_WithLogger_StaleCacheHit_CoversLoggerBranch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BREW_TUI_CACHE_DIR", dir)
+	rawOld, sugarOld := logger.Raw, logger.Sugar
+	t.Cleanup(func() { logger.Raw = rawOld; logger.Sugar = sugarOld })
+	t.Setenv("BREW_TUI_LOG_DIR", t.TempDir())
+	if err := logger.Init(); err != nil {
+		t.Fatal(err)
+	}
+	makeFakeBrew(t, "#!/bin/sh\nprintf '"+formulaInfoJSON+"'\nexit 0\n")
+
+	payload := `{"success":true,"type":"info","data":{"name":"wget","full_name":"wget","tap":"","desc":"","homepage":"","version":"","installed":false,"outdated":false,"pinned":false}}` + "\n"
+	if err := cache.WriteInfo("wget", []byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "info", "wget.json")
+	past := time.Now().Add(-25 * time.Hour)
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { _ = runInfo(nil, []string{"wget"}) })
+
+	responses := decodeResponses(t, out)
+	if len(responses) != 2 {
+		t.Fatalf("expected 2 responses for stale path with logger, got %d: %s", len(responses), out)
+	}
 }
