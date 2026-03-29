@@ -177,3 +177,163 @@ func TestLogDir_BeforeInit_DoesNotPanic(t *testing.T) {
 	Raw = nil
 	_ = LogDir() // must not panic
 }
+
+// ── resolveLogLevel ──────────────────────────────────────────────────────────
+
+func TestResolveLogLevel_Default(t *testing.T) {
+	t.Setenv(envLogLevel, "")
+	if got := resolveLogLevel(); got.String() != "info" {
+		t.Errorf("expected info, got %s", got.String())
+	}
+}
+
+func TestResolveLogLevel_Debug(t *testing.T) {
+	t.Setenv(envLogLevel, "debug")
+	if got := resolveLogLevel(); got.String() != "debug" {
+		t.Errorf("expected debug, got %s", got.String())
+	}
+}
+
+func TestResolveLogLevel_Warn(t *testing.T) {
+	t.Setenv(envLogLevel, "warn")
+	if got := resolveLogLevel(); got.String() != "warn" {
+		t.Errorf("expected warn, got %s", got.String())
+	}
+}
+
+func TestResolveLogLevel_Warning(t *testing.T) {
+	t.Setenv(envLogLevel, "warning")
+	if got := resolveLogLevel(); got.String() != "warn" {
+		t.Errorf("expected warn (from warning), got %s", got.String())
+	}
+}
+
+func TestResolveLogLevel_Error(t *testing.T) {
+	t.Setenv(envLogLevel, "error")
+	if got := resolveLogLevel(); got.String() != "error" {
+		t.Errorf("expected error, got %s", got.String())
+	}
+}
+
+func TestResolveLogLevel_Invalid_DefaultsToInfo(t *testing.T) {
+	t.Setenv(envLogLevel, "invalid")
+	if got := resolveLogLevel(); got.String() != "info" {
+		t.Errorf("expected info (from invalid), got %s", got.String())
+	}
+}
+
+func TestResolveLogLevel_CaseInsensitive(t *testing.T) {
+	t.Setenv(envLogLevel, "DEBUG")
+	if got := resolveLogLevel(); got.String() != "debug" {
+		t.Errorf("expected debug (from DEBUG), got %s", got.String())
+	}
+}
+
+func TestResolveLogLevel_TrimWhitespace(t *testing.T) {
+	t.Setenv(envLogLevel, "  debug  ")
+	if got := resolveLogLevel(); got.String() != "debug" {
+		t.Errorf("expected debug (trimmed), got %s", got.String())
+	}
+}
+
+// ── buildBaseFields ──────────────────────────────────────────────────────────
+
+func TestBuildBaseFields_Empty(t *testing.T) {
+	t.Setenv(envSessionID, "")
+	t.Setenv(envRequestID, "")
+	fields := buildBaseFields()
+	if len(fields) != 0 {
+		t.Errorf("expected 0 fields, got %d", len(fields))
+	}
+}
+
+func TestBuildBaseFields_SessionOnly(t *testing.T) {
+	t.Setenv(envSessionID, "sess-123")
+	t.Setenv(envRequestID, "")
+	fields := buildBaseFields()
+	if len(fields) != 1 {
+		t.Fatalf("expected 1 field, got %d", len(fields))
+	}
+	if fields[0].Key != "session_id" {
+		t.Errorf("expected key session_id, got %s", fields[0].Key)
+	}
+}
+
+func TestBuildBaseFields_RequestOnly(t *testing.T) {
+	t.Setenv(envSessionID, "")
+	t.Setenv(envRequestID, "req-456")
+	fields := buildBaseFields()
+	if len(fields) != 1 {
+		t.Fatalf("expected 1 field, got %d", len(fields))
+	}
+	if fields[0].Key != "request_id" {
+		t.Errorf("expected key request_id, got %s", fields[0].Key)
+	}
+}
+
+func TestBuildBaseFields_Both(t *testing.T) {
+	t.Setenv(envSessionID, "sess-123")
+	t.Setenv(envRequestID, "req-456")
+	fields := buildBaseFields()
+	if len(fields) != 2 {
+		t.Fatalf("expected 2 fields, got %d", len(fields))
+	}
+}
+
+// ── DebugEnabled ─────────────────────────────────────────────────────────────
+
+func TestDebugEnabled_True(t *testing.T) {
+	rawOld, sugarOld := saveState()
+	oldLevel := Level
+	t.Cleanup(func() {
+		restoreState(rawOld, sugarOld)
+		Level = oldLevel
+	})
+
+	t.Setenv(envLogLevel, "debug")
+	t.Setenv(envLogDir, t.TempDir())
+	if err := Init(); err != nil {
+		t.Fatal(err)
+	}
+	if !DebugEnabled() {
+		t.Error("DebugEnabled() should return true when level is debug")
+	}
+}
+
+func TestDebugEnabled_False(t *testing.T) {
+	rawOld, sugarOld := saveState()
+	oldLevel := Level
+	t.Cleanup(func() {
+		restoreState(rawOld, sugarOld)
+		Level = oldLevel
+	})
+
+	t.Setenv(envLogLevel, "info")
+	t.Setenv(envLogDir, t.TempDir())
+	if err := Init(); err != nil {
+		t.Fatal(err)
+	}
+	if DebugEnabled() {
+		t.Error("DebugEnabled() should return false when level is info")
+	}
+}
+
+// ── Init with log level ──────────────────────────────────────────────────────
+
+func TestInit_SetsLevelFromEnv(t *testing.T) {
+	rawOld, sugarOld := saveState()
+	oldLevel := Level
+	t.Cleanup(func() {
+		restoreState(rawOld, sugarOld)
+		Level = oldLevel
+	})
+
+	t.Setenv(envLogLevel, "warn")
+	t.Setenv(envLogDir, t.TempDir())
+	if err := Init(); err != nil {
+		t.Fatal(err)
+	}
+	if Level.String() != "warn" {
+		t.Errorf("expected Level=warn after Init, got %s", Level.String())
+	}
+}

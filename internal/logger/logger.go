@@ -8,6 +8,20 @@
 // stderr — so that the JSON channel is never contaminated by diagnostic
 // output.
 //
+// # Log level control
+//
+// The log level is controlled by the BREW_ENGINE_LOG_LEVEL environment
+// variable. Valid values are: debug, info, warn, error. Default is "info".
+//
+//   - normal mode (info): key markers only — start/end, cache hits, errors.
+//   - support mode (debug): full execution trace for troubleshooting.
+//
+// # Session correlation
+//
+// When BREW_ENGINE_SESSION_ID and/or BREW_ENGINE_REQUEST_ID are set, these
+// values are injected as base fields into every log entry, enabling
+// cross-layer correlation between UI and engine.
+//
 // # Log directory resolution (highest priority first)
 //
 //  1. The path set in the BREW_TUI_LOG_DIR environment variable.
@@ -24,6 +38,7 @@ package logger
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -34,6 +49,18 @@ const (
 	// directory. When set, the value is used verbatim with no further
 	// expansion (no tilde expansion, no shell substitutions).
 	envLogDir = "BREW_TUI_LOG_DIR"
+
+	// envLogLevel is the environment variable that controls log verbosity.
+	// Valid values: debug, info, warn, error. Default: info.
+	envLogLevel = "BREW_ENGINE_LOG_LEVEL"
+
+	// envSessionID is the environment variable for session correlation.
+	// When set, its value is included as a base field in every log entry.
+	envSessionID = "BREW_ENGINE_SESSION_ID"
+
+	// envRequestID is the environment variable for request correlation.
+	// When set, its value is included as a base field in every log entry.
+	envRequestID = "BREW_ENGINE_REQUEST_ID"
 
 	// logFileName is the name of the append-only log file created inside
 	// the resolved log directory.
@@ -57,6 +84,14 @@ var Sugar *zap.SugaredLogger
 // unless logging is on a hot path.
 var Raw *zap.Logger
 
+// Level holds the current log level. Callers can check this before
+// constructing expensive debug payloads:
+//
+//	if logger.Level == zapcore.DebugLevel {
+//	    logger.Sugar.Debugw("expensive", "data", expensiveComputation())
+//	}
+var Level zapcore.Level = zapcore.InfoLevel
+
 // Init initialises the global [Raw] and [Sugar] loggers. It must be called
 // exactly once, before any subcommand runs (main does this). Calling Init
 // more than once will open additional file descriptors for the log file
@@ -64,16 +99,19 @@ var Raw *zap.Logger
 //
 // Init performs the following steps:
 //  1. Resolve the log directory via [resolveLogDir].
-//  2. Create the directory tree (0755) if it does not exist.
-//  3. Open (or create) the log file in append mode (0644).
-//  4. Configure a Zap JSON encoder with ISO 8601 timestamps.
-//  5. Assign the built logger to the package-level [Raw] and [Sugar] vars.
+//  2. Parse log level from BREW_ENGINE_LOG_LEVEL (default: info).
+//  3. Create the directory tree (0755) if it does not exist.
+//  4. Open (or create) the log file in append mode (0644).
+//  5. Configure a Zap JSON encoder with ISO 8601 timestamps.
+//  6. Inject session_id and request_id base fields if env vars are set.
+//  7. Assign the built logger to the package-level [Raw] and [Sugar] vars.
 //
 // Returns a non-nil error if the directory or file cannot be created, or
 // if the file cannot be opened for writing. On error, [Raw] and [Sugar]
 // remain nil and all log calls throughout the engine become no-ops.
 func Init() error {
 	logDir := resolveLogDir()
+	Level = resolveLogLevel()
 
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return err
@@ -92,13 +130,23 @@ func Init() error {
 	core := zapcore.NewCore(
 		zapcore.NewJSONEncoder(encoderCfg),
 		zapcore.AddSync(f),
-		zapcore.DebugLevel,
+		Level,
 	)
 
 	Raw = zap.New(core, zap.WithCaller(false))
+
+	// Inject session/request correlation fields if present.
+	baseFields := buildBaseFields()
+	if len(baseFields) > 0 {
+		Raw = Raw.With(baseFields...)
+	}
+
 	Sugar = Raw.Sugar()
 
-	Sugar.Infow("brew-engine started", "log_dir", logDir)
+	Sugar.Infow("brew-engine started",
+		"log_dir", logDir,
+		"log_level", Level.String(),
+	)
 	return nil
 }
 
@@ -136,4 +184,41 @@ func resolveLogDir() string {
 		return filepath.Join("/tmp", "brew-engine")
 	}
 	return filepath.Join(home, ".local", "state", "brew-engine")
+}
+
+// resolveLogLevel parses BREW_ENGINE_LOG_LEVEL and returns the corresponding
+// zapcore.Level. Unrecognised or empty values default to InfoLevel.
+func resolveLogLevel() zapcore.Level {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(envLogLevel)))
+	switch raw {
+	case "debug":
+		return zapcore.DebugLevel
+	case "info", "":
+		return zapcore.InfoLevel
+	case "warn", "warning":
+		return zapcore.WarnLevel
+	case "error":
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel
+	}
+}
+
+// buildBaseFields returns zap.Field entries for session and request IDs
+// if the corresponding environment variables are set.
+func buildBaseFields() []zap.Field {
+	var fields []zap.Field
+	if sid := os.Getenv(envSessionID); sid != "" {
+		fields = append(fields, zap.String("session_id", sid))
+	}
+	if rid := os.Getenv(envRequestID); rid != "" {
+		fields = append(fields, zap.String("request_id", rid))
+	}
+	return fields
+}
+
+// DebugEnabled returns true if the current log level allows debug output.
+// Use this to guard expensive debug payload construction.
+func DebugEnabled() bool {
+	return Level <= zapcore.DebugLevel
 }

@@ -222,8 +222,9 @@ func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 			clean := strings.TrimRight(stripANSI(raw), "\r")
 
 			// ── Log every line (raw brew output goes here, never to stdout) ──
+			// This is debug-level: trace every instruction when support mode is on.
 			if logger.Sugar != nil {
-				logger.Sugar.Infow("brew output",
+				logger.Sugar.Debugw("brew output",
 					"source", source,
 					"package", pkg,
 					"line", clean,
@@ -237,12 +238,19 @@ func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 				// CAS; all subsequent calls see a non-zero flag and skip.
 				if detected := detectBuildMode(clean); detected != buildModeUnknown {
 					if buildModeFlag.CompareAndSwap(buildModeUnknown, detected) {
+						mode := buildModeString(detected)
+						if logger.Sugar != nil {
+							logger.Sugar.Infow("build mode detected",
+								"package", pkg,
+								"mode", mode,
+							)
+						}
 						contract.WriteJSON(out, contract.Response{
 							Success: true,
 							Type:    "build_mode",
 							Data: contract.BuildModeData{
 								Package: pkg,
-								Mode:    buildModeString(detected),
+								Mode:    mode,
 							},
 						})
 					}
@@ -287,6 +295,15 @@ func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 		Package:   pkg,
 		ExitCode:  exitCode,
 		BuildMode: buildModeString(buildModeFlag.Load()),
+	}
+
+	// Key info marker: command completion with outcome.
+	if logger.Sugar != nil {
+		logger.Sugar.Infow("command completed",
+			"package", pkg,
+			"exit_code", exitCode,
+			"build_mode", doneData.BuildMode,
+		)
 	}
 
 	if exitCode == 0 {
