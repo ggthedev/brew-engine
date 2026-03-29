@@ -20,16 +20,17 @@ management interface with two planned frontends:
 └──────────┬────┴────────┬────────┘
            │  stdout     │ direct import
            │  (JSON)     │
-     ┌─────▼─────────────▼──────┐
+     ┌─────▼─────────────▼───────┐
      │        brew-engine        │
      │  cmd/  →  internal/       │
      │  Cobra    parser  logger  │
      │           contract        │
      └──────────────┬────────────┘
                     │ exec.Command
-              ┌─────▼──────┐
-              │  /opt/homebrew/bin/brew  │
-              └────────────┘
+                    ▼
+        ┌──────────────────────────┐
+        │  /opt/homebrew/bin/brew  │
+        └──────────────────────────┘
 ```
 
 ### Key design decisions
