@@ -36,13 +36,15 @@ import (
 //
 // Valid Type values:
 //
-//   - "list"     — Data is [ListData]; emitted by the list subcommand.
+//   - "list"     — Data is [NamesList]; emitted by the list subcommand.
 //   - "info"     — Data is [FormulaInfo] or [CaskInfo]; emitted by info.
 //   - "progress" — Data is [ProgressStep]; emitted once per "==>" line
 //     during an install or remove operation.
 //   - "done"     — Data is [DoneData]; final event on successful exit.
 //   - "error"    — Data is [DoneData] (when exit code is available) or
 //     omitted; Success is always false for this type.
+//   - "event"    — Data is [CacheEvent]; emitted by the cache watcher
+//     when a background rebuild completes.
 type Response struct {
 	// Success indicates whether the underlying brew operation succeeded.
 	// When false, Error is guaranteed to be non-empty.
@@ -50,7 +52,12 @@ type Response struct {
 
 	// Type identifies the shape of the Data field. See the list of valid
 	// values in the type-level documentation.
-	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error"
+	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error" | "event"
+
+	// IsStale is true when the response was served from an expired cache
+	// entry. A fresh response will follow on stdout once the background
+	// revalidation goroutine completes. Omitted from JSON when false.
+	IsStale bool `json:"is_stale,omitempty"`
 
 	// Error is a human-readable description of the failure. It is only
 	// present when Success is false; omitted from JSON when empty.
@@ -267,6 +274,19 @@ type RawCask struct {
 	// null when not installed, which encoding/json decodes to "".
 	Installed string `json:"installed"`
 	Outdated  bool   `json:"outdated"`
+}
+
+// ─── Cache event types ───────────────────────────────────────────────────────
+
+// CacheEvent is the Data payload carried by a [Response] with Type="event".
+// It is emitted by the cache watcher goroutine whenever a background cache
+// rebuild completes, signalling the frontend to refresh its view.
+type CacheEvent struct {
+	// Action describes what happened (e.g. "cache_rebuilt").
+	Action string `json:"action"`
+
+	// Target names the cache artefact that was rebuilt (e.g. "list").
+	Target string `json:"target"`
 }
 
 // ─── State-changing command types (install / remove) ─────────────────────────
