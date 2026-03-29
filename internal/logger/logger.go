@@ -40,6 +40,12 @@ const (
 	logFileName = "brew-engine.log"
 )
 
+// userHomeDir is the function used to locate the current user's home
+// directory. It is a package-level variable so tests can override it to
+// simulate a missing home directory and exercise the /tmp fallback path
+// inside [resolveLogDir].
+var userHomeDir = os.UserHomeDir
+
 // Sugar is the package-level sugared logger. It supports both structured
 // key-value pairs (Infow, Debugw, Warnw) and printf-style formatting
 // (Infof, Debugf). Callers must guard against a nil Sugar before the
@@ -125,7 +131,7 @@ func resolveLogDir() string {
 	if d := os.Getenv(envLogDir); d != "" {
 		return d
 	}
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		return filepath.Join("/tmp", "brew-engine")
 	}

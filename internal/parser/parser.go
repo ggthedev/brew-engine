@@ -54,6 +54,14 @@ import (
 // (e.g. \x1b[1A), and erase-in-line (e.g. \x1b[2K).
 var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
 
+// execBrewCommand constructs the exec.Cmd that runStreamingCommand will start.
+// It is a package-level variable so tests can override it to return a
+// pre-configured *exec.Cmd that triggers error paths (e.g. pre-set Stdout
+// to force StdoutPipe to return an error).
+var execBrewCommand = func(brewArgs []string) *exec.Cmd {
+	return exec.Command("brew", brewArgs...)
+}
+
 // stripANSI returns a copy of s with all ANSI escape sequences removed.
 // It uses [ansiEscape] and is called on every line captured from the brew
 // subprocess before the line is logged or compared against the "==>" prefix.
@@ -107,7 +115,7 @@ func RunRemove(pkg string, out io.Writer) {
 // goroutines have signalled completion via the done channel. Calling Wait
 // before draining the pipes would deadlock once the pipe buffer fills.
 func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
-	cmd := exec.Command("brew", brewArgs...)
+	cmd := execBrewCommand(brewArgs)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {

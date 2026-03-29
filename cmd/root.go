@@ -40,6 +40,17 @@ valid contract.Response payload.`,
 	// Suppress Cobra's default error/usage output so that stdout stays clean JSON.
 	SilenceErrors: true,
 	SilenceUsage:  true,
+	// RunE ensures that calling brew-engine with no subcommand emits a JSON
+	// error instead of Cobra's default help text, preserving the invariant
+	// that stdout only ever contains contract.Response JSON objects.
+	RunE: func(_ *cobra.Command, _ []string) error {
+		contract.WriteJSON(os.Stdout, contract.Response{
+			Success: false,
+			Type:    "error",
+			Error:   "no subcommand specified; use list, info, install, or remove",
+		})
+		return nil
+	},
 }
 
 // Execute is the single entry point called from main. It runs the Cobra
