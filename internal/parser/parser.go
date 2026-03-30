@@ -60,8 +60,15 @@ var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
 // It is a package-level variable so tests can override it to return a
 // pre-configured *exec.Cmd that triggers error paths (e.g. pre-set Stdout
 // to force StdoutPipe to return an error).
+//
+// The brew executable is resolved from BREW_ENGINE_BREW_PATH (set by
+// internal/config at startup), falling back to the first "brew" on PATH.
 var execBrewCommand = func(brewArgs []string) *exec.Cmd {
-	return exec.Command("brew", brewArgs...)
+	brewPath := os.Getenv("BREW_ENGINE_BREW_PATH")
+	if brewPath == "" {
+		brewPath = "brew"
+	}
+	return exec.Command(brewPath, brewArgs...)
 }
 
 // stripANSI returns a copy of s with all ANSI escape sequences removed.
@@ -174,7 +181,11 @@ func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 	cmd := execBrewCommand(brewArgs)
 
 	// Open brew-output.log for raw subprocess output (best-effort; nil means disabled).
-	brewLog := logger.OpenBrewOutputLog("brew " + strings.Join(brewArgs, " "))
+	brewPath := os.Getenv("BREW_ENGINE_BREW_PATH")
+	if brewPath == "" {
+		brewPath = "brew"
+	}
+	brewLog := logger.OpenBrewOutputLog(brewPath + " " + strings.Join(brewArgs, " "))
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
