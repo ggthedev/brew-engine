@@ -165,6 +165,7 @@ Every `RunE` handler **must**:
 | `watch.go` | `watch` | Starts `cache.StartWatcher`; blocks on `signal.NotifyContext` until SIGINT/SIGTERM |
 | `refresh.go` | `refresh` | Invalidates list cache and forces a rebuild; emits `Type="list"` |
 | `clean.go` | `clean` | Wipes log and/or cache directories on demand; emits `Type="clean"` |
+| `nuke.go` | `nuke` | Runs `brew cleanup -s --prune=all` and/or wipes app cache; emits `Type="nuke"` |
 
 #### The `Execute` safety net
 
@@ -482,6 +483,7 @@ JSON object**.
 | `"event"` | `CacheEvent` | `internal/cache` watcher on rebuild |
 | `"clean"` | `cleanResult` | `cmd/clean.go` on successful wipe |
 | `"brew_not_found"` | `BrewNotFoundData` | `main()` pre-subcommand brew check; process exits 2 after this event |
+| `"nuke"` | `NukeData` | `cmd/nuke.go`; `brew_exit_code` reflects brew cleanup's exit status |
 
 ### `is_stale` flag
 

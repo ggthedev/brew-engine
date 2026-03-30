@@ -51,6 +51,8 @@ import (
 //   - "brew_not_found" — Data is [BrewNotFoundData]; emitted by main before
 //     any subcommand runs when Homebrew cannot be located on disk.
 //     The process exits with code 2 immediately after this event.
+//   - "nuke"          — Data is [NukeData]; emitted by the nuke subcommand
+//     after running brew cleanup and/or wiping the app cache.
 type Response struct {
 	// Success indicates whether the underlying brew operation succeeded.
 	// When false, Error is guaranteed to be non-empty.
@@ -58,7 +60,7 @@ type Response struct {
 
 	// Type identifies the shape of the Data field. See the list of valid
 	// values in the type-level documentation.
-	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error" | "event" | "build_mode" | "brew_not_found"
+	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error" | "event" | "build_mode" | "brew_not_found" | "nuke"
 
 	// IsStale is true when the response was served from an expired cache
 	// entry. A fresh response will follow on stdout once the background
@@ -344,6 +346,25 @@ type BrewNotFoundData struct {
 	// CheckedPaths lists the well-known locations that were probed, in
 	// priority order, before giving up. Useful for diagnostics.
 	CheckedPaths []string `json:"checked_paths"`
+}
+
+// NukeData is the Data payload carried by a [Response] with Type="nuke".
+// It is emitted by the nuke subcommand after running brew cleanup and/or
+// wiping the app cache directory.
+type NukeData struct {
+	// BrewCacheNuked is true when `brew cleanup -s --prune=all` was executed.
+	BrewCacheNuked bool `json:"brew_cache_nuked,omitempty"`
+
+	// BrewExitCode is the exit code returned by the brew cleanup subprocess.
+	// Present only when BrewCacheNuked is true.
+	BrewExitCode int `json:"brew_exit_code,omitempty"`
+
+	// AppCacheNuked is true when the app cache directory was wiped.
+	AppCacheNuked bool `json:"app_cache_nuked,omitempty"`
+
+	// AppCacheDir is the absolute path of the app cache that was wiped.
+	// Present only when AppCacheNuked is true.
+	AppCacheDir string `json:"app_cache_dir,omitempty"`
 }
 
 // DoneData is the final Data payload emitted after a state-changing brew
