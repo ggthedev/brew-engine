@@ -99,17 +99,36 @@ func runNuke(_ *cobra.Command, _ []string) error {
 // runBrewCleanup executes `brew cleanup -s --prune=all` and returns the exit
 // code. Returns an error only if the process could not be started at all (e.g.
 // binary not found); a non-zero exit from brew itself is returned as exitCode.
+// Combined stdout+stderr are appended to brew-output.log for audit purposes.
 func runBrewCleanup() (int, error) {
 	brewPath := os.Getenv("BREW_ENGINE_BREW_PATH")
 	if brewPath == "" {
 		brewPath = "brew"
 	}
 	cmd := execNukeCommand(brewPath, "cleanup", "-s", "--prune=all")
-	if err := cmd.Run(); err != nil {
+	out, err := cmd.CombinedOutput()
+
+	exitCode := 0
+	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode(), nil
+			exitCode = exitErr.ExitCode()
+		} else {
+			// Process could not be started — log whatever we have and propagate.
+			if f := logger.OpenBrewOutputLog(brewPath + " cleanup -s --prune=all"); f != nil {
+				logger.WriteBrewOutputFooter(f, 1)
+				_ = f.Close()
+			}
+			return 1, err
 		}
-		return 1, err
 	}
-	return 0, nil
+
+	if f := logger.OpenBrewOutputLog(brewPath + " cleanup -s --prune=all"); f != nil {
+		if len(out) > 0 {
+			_, _ = f.Write(out)
+		}
+		logger.WriteBrewOutputFooter(f, exitCode)
+		_ = f.Close()
+	}
+
+	return exitCode, nil
 }
