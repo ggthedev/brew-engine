@@ -172,6 +172,9 @@ func detectBuildMode(line string) int32 {
 func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 	cmd := execBrewCommand(brewArgs)
 
+	// Open brew-output.log for raw subprocess output (best-effort; nil means disabled).
+	brewLog := logger.OpenBrewOutputLog("brew " + strings.Join(brewArgs, " "))
+
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		contract.WriteJSON(out, contract.Response{
@@ -221,7 +224,12 @@ func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 			raw := scanner.Text()
 			clean := strings.TrimRight(stripANSI(raw), "\r")
 
-			// ── Log every line (raw brew output goes here, never to stdout) ──
+			// ── Tee raw line to brew-output.log ───────────────────────────
+			if brewLog != nil {
+				_, _ = fmt.Fprintln(brewLog, raw)
+			}
+
+			// ── Log every line (structured log, never to stdout) ─────────
 			// This is debug-level: trace every instruction when support mode is on.
 			if logger.Sugar != nil {
 				logger.Sugar.Debugw("brew output",
@@ -289,6 +297,12 @@ func runStreamingCommand(pkg string, brewArgs []string, out io.Writer) {
 		} else {
 			exitCode = 1
 		}
+	}
+
+	// Write footer and close the raw brew output log.
+	logger.WriteBrewOutputFooter(brewLog, exitCode)
+	if brewLog != nil {
+		_ = brewLog.Close()
 	}
 
 	doneData := contract.DoneData{

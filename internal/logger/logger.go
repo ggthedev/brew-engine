@@ -75,9 +75,11 @@ const (
 	// When set, its value is included as a base field in every log entry.
 	envRequestID = "BREW_ENGINE_REQUEST_ID"
 
-	// logFileName is the name of the append-only log file created inside
-	// the resolved log directory.
-	logFileName = "brew-engine.log"
+	// envBrewOutputLogFileName is the env var for the brew raw output log filename.
+	envBrewOutputLogFileName = "BREW_ENGINE_BREW_OUTPUT_LOG_FILE_NAME"
+
+	// defaultBrewOutputLogFileName is the fallback filename for the brew output log.
+	defaultBrewOutputLogFileName = "brew-output.log"
 )
 
 // userHomeDir is the function used to locate the current user's home
@@ -240,4 +242,53 @@ func buildBaseFields() []zap.Field {
 // Use this to guard expensive debug payload construction.
 func DebugEnabled() bool {
 	return Level <= zapcore.DebugLevel
+}
+
+// OpenBrewOutputLog opens (or creates) the brew-output.log file in the
+// resolved log directory and writes a timestamped invocation header.
+// The returned file must be closed by the caller when the brew subprocess
+// exits.
+//
+// This log is separate from the structured Zap log: it captures the raw
+// text output from every brew subprocess for post-mortem debugging.
+// Format:
+//
+//	[2026-03-30T12:00:00Z] brew install humanlog
+//	<raw stdout/stderr lines>
+//	[EXIT 0]
+//
+// Returns nil when the file cannot be opened so callers can treat it as an
+// optional writer without crashing on log failures.
+func OpenBrewOutputLog(command string) *os.File {
+	logDir := resolveLogDir()
+	if logDir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil
+	}
+
+	name := os.Getenv(envBrewOutputLogFileName)
+	if name == "" {
+		name = defaultBrewOutputLogFileName
+	}
+
+	path := filepath.Join(logDir, name)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil
+	}
+
+	header := fmt.Sprintf("\n[%s] %s\n", time.Now().UTC().Format(time.RFC3339), command)
+	_, _ = f.WriteString(header)
+	return f
+}
+
+// WriteBrewOutputFooter writes the exit-code footer to a brew output log file
+// opened by [OpenBrewOutputLog]. It is a no-op when f is nil.
+func WriteBrewOutputFooter(f *os.File, exitCode int) {
+	if f == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(f, "[EXIT %d]\n", exitCode)
 }
