@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/brewexplorer/brew-engine/internal/contract"
+	"github.com/brewexplorer/brew-engine/internal/logger"
 )
 
 // ─── Constants ───────────────────────────────────────────────────────────────

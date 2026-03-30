@@ -27,7 +27,7 @@
 //  1. The path set in the BREW_ENGINE_LOG_DIR environment variable (set by
 //     internal/config from the application plist at startup).
 //  2. BREW_TUI_LOG_DIR — legacy override, honoured for backward compatibility.
-//  3. ~/.local/state/brew-engine/ — XDG Base Directory-compliant default.
+//  3. ~/Library/Application Support/BrewExplorer/logs — macOS compiled default.
 //  4. /tmp/brew-engine/ — last-resort fallback when os.UserHomeDir fails.
 //
 // # Log rotation
