@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: ["**"]
 
+# Opt into Node.js 24 for all actions now.
+# Avoids the "Node.js 20 is deprecated" warning; required before June 2026
+# when Node.js 24 becomes the forced default on GitHub-hosted runners.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 # Minimum permissions; checks:write is required for dorny/test-reporter
 # to publish the JUnit result as a GitHub Check annotation.
 permissions:
