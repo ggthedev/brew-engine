@@ -60,7 +60,7 @@ type Response struct {
 
 	// Type identifies the shape of the Data field. See the list of valid
 	// values in the type-level documentation.
-	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error" | "event" | "build_mode" | "brew_not_found" | "nuke"
+	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error" | "event" | "build_mode" | "brew_not_found" | "nuke" | "fatal"
 
 	// IsStale is true when the response was served from an expired cache
 	// entry. A fresh response will follow on stdout once the background
