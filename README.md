@@ -189,3 +189,5 @@ brew-engine/
     └── parser/
         └── parser.go           # bufio.Scanner, ANSI strip, build-mode detection, progress events
 ```
+
+#### Disclaimer: Vibe coded, an experiement
