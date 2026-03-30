@@ -112,11 +112,29 @@ anywhere in the codebase.**
 `main.go` is intentionally minimal:
 
 ``` go
-config.Load()   // 1. read plist via plutil → parse JSON → os.Setenv each key
-logger.Init()   // 2. open daily log file; sets logger.Sugar and logger.Raw
-defer logger.Sync()
-cmd.Execute()   // 3. hands control to Cobra; never returns on success
+config.Load()          // 1. read plist → JSON → os.Setenv each key
+logger.Init()          // 2. open daily log file; sets logger.Sugar and logger.Raw
+// 3. brew check (see below)
+cmd.Execute()          // 4. hands control to Cobra; never returns on success
 ```
+
+**Step 3 — brew availability check (audit-logged):**
+
+```
+config.ResolvedBrewPath() → IsBrewExecutable?
+  YES → logger.Sugar.Infow("brew verified", "path", ...)    → continue
+  NO  → logger.Sugar.Errorw("brew not found", ...)           → emit brew_not_found JSON → exit 2
+```
+
+The check runs **after** `logger.Init()` so that both outcomes are written
+to the Zap audit file (the daily log) on every invocation. Exit code 2 is
+distinct from all other exits:
+
+| Exit code | Meaning | Channel |
+| --- | --- | --- |
+| 0 | Success | — |
+| 1 | Config or logger init failure | `stderr` only |
+| 2 | Homebrew not found | `stdout` JSON + Zap log |
 
 `config.Load()` runs first so that every env var the logger and commands
 read (`BREW_ENGINE_LOG_DIR`, `BREW_ENGINE_LOG_LEVEL`, `BREW_TUI_CACHE_DIR`,
@@ -463,6 +481,7 @@ JSON object**.
 | `"error"` | `DoneData` (with `build_mode` field, optional) | any layer on failure |
 | `"event"` | `CacheEvent` | `internal/cache` watcher on rebuild |
 | `"clean"` | `cleanResult` | `cmd/clean.go` on successful wipe |
+| `"brew_not_found"` | `BrewNotFoundData` | `main()` pre-subcommand brew check; process exits 2 after this event |
 
 ### `is_stale` flag
 
