@@ -53,6 +53,9 @@ import (
 //     The process exits with code 2 immediately after this event.
 //   - "nuke"          — Data is [NukeData]; emitted by the nuke subcommand
 //     after running brew cleanup and/or wiping the app cache.
+//   - "fatal"         — No Data field; emitted by main before os.Exit(1) when
+//     config or logger initialisation fails. The process exits with code 1
+//     immediately after this event. Error contains the failure detail.
 type Response struct {
 	// Success indicates whether the underlying brew operation succeeded.
 	// When false, Error is guaranteed to be non-empty.

@@ -17,13 +17,15 @@
 // Exit codes:
 //
 //	0 — success
-//	1 — config or logger initialisation failure (written to stderr only)
-//	2 — Homebrew not found (JSON written to stdout; also logged to audit file)
+//	1 — config or logger initialisation failure (Type="fatal" JSON on stdout; detail on stderr)
+//	2 — Homebrew not found (Type="brew_not_found" JSON on stdout; also logged to audit file)
 //
 // stdout invariant: the only bytes ever written to stdout are complete,
-// newline-terminated [contract.Response] JSON objects. If logger
-// initialisation fails, the diagnostic is written to stderr only — the
-// stdout channel is never contaminated.
+// newline-terminated [contract.Response] JSON objects. Every exit path —
+// including init failures — writes a JSON line to stdout before terminating,
+// so the consumer process always has a machine-readable event to act on.
+// stderr carries a plain-text copy of the same message as a secondary channel
+// for CLI users and crash logs.
 package main
 
 import (
@@ -38,17 +40,29 @@ import (
 
 // main initialises the Zap file logger and then hands control to
 // [cmd.Execute]. It is the only place in the binary where os.Exit is
-// called outside of an error path — every other exit is either through
-// normal Cobra completion or a JSON error payload written by a subcommand.
+// called — every exit is preceded by a JSON line on stdout so that the
+// consumer process (e.g. a Swift app driving brew-engine as a subprocess)
+// can always parse and surface the failure without relying on exit codes alone.
 func main() {
 	if err := config.Load(); err != nil {
-		fmt.Fprintf(os.Stderr, "fatal: failed to load config: %s\n", err)
+		msg := fmt.Sprintf("failed to load config: %s", err)
+		contract.WriteJSON(os.Stdout, contract.Response{
+			Success: false,
+			Type:    "fatal",
+			Error:   msg,
+		})
+		fmt.Fprintf(os.Stderr, "fatal: %s\n", msg)
 		os.Exit(1)
 	}
 
 	if err := logger.Init(); err != nil {
-		// stdout is reserved for JSON only; logger failures go to stderr
-		fmt.Fprintf(os.Stderr, "fatal: failed to initialize logger: %s\n", err)
+		msg := fmt.Sprintf("failed to initialize logger: %s", err)
+		contract.WriteJSON(os.Stdout, contract.Response{
+			Success: false,
+			Type:    "fatal",
+			Error:   msg,
+		})
+		fmt.Fprintf(os.Stderr, "fatal: %s\n", msg)
 		os.Exit(1)
 	}
 	defer logger.Sync()
