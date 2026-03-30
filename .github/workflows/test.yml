@@ -1,0 +1,62 @@
+name: Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+# Minimum permissions; checks:write is required for dorny/test-reporter
+# to publish the JUnit result as a GitHub Check annotation.
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  test:
+    name: Run Tests
+    # macos-latest is required — internal/config shells out to plutil,
+    # which is a macOS-only binary and is not available on Linux runners.
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Reads the minimum Go version from go.mod; the runner will use
+          # the latest stable patch release for that minor version.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@latest
+
+      - name: Run tests
+        run: |
+          gotestsum \
+            --junitfile test-report.xml \
+            --format testdox \
+            -- -count=1 -timeout 120s ./...
+
+      - name: Upload test report artifact
+        uses: actions/upload-artifact@v4
+        # Run even when tests fail so the report is always available.
+        if: always()
+        with:
+          name: test-report
+          path: test-report.xml
+          retention-days: 30
+
+      - name: Publish test report
+        uses: dorny/test-reporter@v1
+        # Run even when tests fail to surface failures as Check annotations.
+        if: always()
+        with:
+          name: Go Tests
+          path: test-report.xml
+          reporter: java-junit
+          # Fail the workflow if any test case failed.
+          fail-on-error: true
