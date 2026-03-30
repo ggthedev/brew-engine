@@ -83,9 +83,11 @@ func TestInit_Success_CreatesLogFile(t *testing.T) {
 	if Sugar == nil {
 		t.Error("Sugar must not be nil after successful Init")
 	}
-	logPath := filepath.Join(dir, logFileName)
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		t.Errorf("log file was not created at %s", logPath)
+	// With daily rotation the file lives in <dir>/daily/brew-engine-YYYY-MM-DD.log
+	dailyDir := filepath.Join(dir, dailySubDir)
+	entries, readErr := os.ReadDir(dailyDir)
+	if readErr != nil || len(entries) == 0 {
+		t.Errorf("daily log directory not populated at %s", dailyDir)
 	}
 }
 

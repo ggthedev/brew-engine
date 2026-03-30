@@ -24,9 +24,18 @@
 //
 // # Log directory resolution (highest priority first)
 //
-//  1. The path set in the BREW_TUI_LOG_DIR environment variable.
-//  2. ~/.local/state/brew-engine/ — XDG Base Directory-compliant default.
-//  3. /tmp/brew-engine/ — last-resort fallback when os.UserHomeDir fails.
+//  1. The path set in the BREW_ENGINE_LOG_DIR environment variable (set by
+//     internal/config from the application plist at startup).
+//  2. BREW_TUI_LOG_DIR — legacy override, honoured for backward compatibility.
+//  3. ~/.local/state/brew-engine/ — XDG Base Directory-compliant default.
+//  4. /tmp/brew-engine/ — last-resort fallback when os.UserHomeDir fails.
+//
+// # Log rotation
+//
+// Log files are written to <LogDir>/daily/ with daily rotation and a 2 MB
+// per-file size cap. Overflow files are named brew-engine-YYYY-MM-DD.N.log.
+// At startup, daily files from previous months are automatically merged into
+// <LogDir>/monthly/brew-engine-YYYY-MM.log and the originals are removed.
 //
 // # Log format
 //
@@ -36,19 +45,23 @@
 package logger
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
 const (
-	// envLogDir is the environment variable that overrides the default log
-	// directory. When set, the value is used verbatim with no further
-	// expansion (no tilde expansion, no shell substitutions).
-	envLogDir = "BREW_TUI_LOG_DIR"
+	// envLogDir is the primary env var for the log directory, set by
+	// internal/config from the application plist at startup.
+	envLogDir = "BREW_ENGINE_LOG_DIR"
+
+	// envLogDirLegacy is the legacy env var honoured for backward compat.
+	envLogDirLegacy = "BREW_TUI_LOG_DIR"
 
 	// envLogLevel is the environment variable that controls log verbosity.
 	// Valid values: debug, info, warn, error. Default: info.
@@ -100,15 +113,15 @@ var Level zapcore.Level = zapcore.InfoLevel
 // Init performs the following steps:
 //  1. Resolve the log directory via [resolveLogDir].
 //  2. Parse log level from BREW_ENGINE_LOG_LEVEL (default: info).
-//  3. Create the directory tree (0755) if it does not exist.
-//  4. Open (or create) the log file in append mode (0644).
+//  3. Merge any daily log files from previous months into monthly archives.
+//  4. Open today's daily log file via [dailyWriter] (rotates at 2 MB).
 //  5. Configure a Zap JSON encoder with ISO 8601 timestamps.
 //  6. Inject session_id and request_id base fields if env vars are set.
 //  7. Assign the built logger to the package-level [Raw] and [Sugar] vars.
 //
-// Returns a non-nil error if the directory or file cannot be created, or
-// if the file cannot be opened for writing. On error, [Raw] and [Sugar]
-// remain nil and all log calls throughout the engine become no-ops.
+// Returns a non-nil error if the log directory or daily file cannot be
+// created. On error, [Raw] and [Sugar] remain nil and all log calls
+// throughout the engine become no-ops.
 func Init() error {
 	logDir := resolveLogDir()
 	Level = resolveLogLevel()
@@ -117,8 +130,11 @@ func Init() error {
 		return err
 	}
 
-	logPath := filepath.Join(logDir, logFileName)
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// Merge previous months' daily files before opening today's file.
+	MergeOldMonths(logDir)
+
+	dailyDir := filepath.Join(logDir, dailySubDir)
+	w, err := newDailyWriter(dailyDir)
 	if err != nil {
 		return err
 	}
@@ -129,7 +145,7 @@ func Init() error {
 
 	core := zapcore.NewCore(
 		zapcore.NewJSONEncoder(encoderCfg),
-		zapcore.AddSync(f),
+		zapcore.Lock(w),
 		Level,
 	)
 
@@ -177,6 +193,9 @@ func LogDir() string {
 // that responsibility belongs to [Init].
 func resolveLogDir() string {
 	if d := os.Getenv(envLogDir); d != "" {
+		return d
+	}
+	if d := os.Getenv(envLogDirLegacy); d != "" {
 		return d
 	}
 	home, err := userHomeDir()
