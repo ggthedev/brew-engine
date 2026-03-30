@@ -19,10 +19,12 @@ step-by-step guide to adding a new subcommand.
     - [2.4 Contract layer — `internal/contract`](#24-contract-layer--internalcontract)
     - [2.5 Parser layer — `internal/parser`](#25-parser-layer--internalparser)
     - [2.6 Logger layer — `internal/logger`](#26-logger-layer--internallogger)
+    - [2.7 Config layer — `internal/config`](#27-config-layer--internalconfig)
   - [3. Public Interfaces](#3-public-interfaces)
     - [`internal/contract`](#internalcontract)
     - [`internal/cache`](#internalcache)
     - [`internal/logger`](#internallogger)
+    - [`internal/config`](#internalconfig)
     - [`internal/parser`](#internalparser)
     - [`cmd`](#cmd)
   - [4. Private / Injectable Interfaces](#4-private--injectable-interfaces)
@@ -34,7 +36,12 @@ step-by-step guide to adding a new subcommand.
   - [6. The Caching Layer — End-to-End Flow](#6-the-caching-layer--end-to-end-flow)
     - [`list` — infinite TTL, watcher-invalidated](#list--infinite-ttl-watcher-invalidated)
     - [`info` — 24h TTL, stale-while-revalidate](#info--24h-ttl-stale-while-revalidate)
-  - [7. Adding a New Subcommand](#7-adding-a-new-subcommand)
+  - [7. Log Infrastructure — Rotation, Merge, and Raw Output](#7-log-infrastructure--rotation-merge-and-raw-output)
+    - [Directory layout](#directory-layout)
+    - [Daily rotation (`dailyWriter`)](#daily-rotation-dailywriter)
+    - [Monthly merge (`MergeOldMonths`)](#monthly-merge-mergeoldmonths)
+    - [Raw brew output (`brew-output.log`)](#raw-brew-output-brew-outputlog)
+  - [8. Adding a New Subcommand](#8-adding-a-new-subcommand)
     - [Step 1 — Define the contract types (if needed)](#step-1--define-the-contract-types-if-needed)
     - [Step 2 — Create `cmd/upgrade.go`](#step-2--create-cmdupgradego)
     - [Step 3 — If the command streams output, use `internal/parser`](#step-3--if-the-command-streams-output-use-internalparser)
@@ -57,14 +64,14 @@ step-by-step guide to adding a new subcommand.
                     ▼                      ▼
 ┌──────────────────────────────────────────────────────────┐
 │                     main.go                              │
-│   logger.Init() ──► cmd.Execute()                        │
+│  config.Load() ──► logger.Init() ──► cmd.Execute()       │
 └──────────────────────────────────────────────────────────┘
                     │
                     ▼
 ┌──────────────────────────────────────────────────────────┐
 │                     cmd/  (Cobra)                        │
-│  root.go   list.go   info.go   install.go   remove.go    │
-│                      watch.go                            │
+│  root.go  list.go  info.go  install.go  remove.go        │
+│           watch.go  refresh.go  clean.go                 │
 └──────┬──────────────────────────────────────────┬────────┘
        │ uses                                     │ uses
        ▼                                          ▼
@@ -78,10 +85,16 @@ step-by-step guide to adding a new subcommand.
 ┌─────────────────────┐              ┌─────────────────────┐
 │  internal/contract  │              │  internal/logger    │
 │  types.go           │              │  logger.go          │
-└─────────────────────┘              └─────────────────────┘
-                    │
+└─────────────────────┘              │  rotation.go        │
+                    │                └─────────────────────┘
                     ▼
               exec.Command("brew", ...)
+
+                    ▲  env vars set at startup
+┌──────────────────────────────────────────────────────────┐
+│                  internal/config                         │
+│  defaults.go   config.go   (plutil → JSON → os.Setenv)   │
+└──────────────────────────────────────────────────────────┘
 ```
 
 go
@@ -99,10 +112,16 @@ anywhere in the codebase.**
 `main.go` is intentionally minimal:
 
 ``` go
-logger.Init()   // opens the log file; sets logger.Sugar and logger.Raw
+config.Load()   // 1. read plist via plutil → parse JSON → os.Setenv each key
+logger.Init()   // 2. open daily log file; sets logger.Sugar and logger.Raw
 defer logger.Sync()
-cmd.Execute()   // hands control to Cobra; never returns on success
+cmd.Execute()   // 3. hands control to Cobra; never returns on success
 ```
+
+`config.Load()` runs first so that every env var the logger and commands
+read (`BREW_ENGINE_LOG_DIR`, `BREW_ENGINE_LOG_LEVEL`, `BREW_TUI_CACHE_DIR`,
+etc.) is already populated with plist-derived or compiled-default values
+before any layer inspects them.
 
 It owns no business logic. It exists purely to sequence initialization
 before the Cobra tree takes over.
@@ -123,9 +142,11 @@ Every `RunE` handler **must**:
 | `root.go` | (root) | Emits JSON error on invocation with no subcommand; sets `SilenceErrors`/`SilenceUsage` |
 | `list.go` | `list` | Cache-first (infinite TTL); falls back to `cache.BuildAndCacheList` |
 | `info.go` | `info <pkg>` | Stale-while-revalidate (24h TTL); `--force` / `-f` bypasses cache |
-| `install.go` | `install <pkg>` | Delegates directly to `parser.RunInstall`; streams progress events |
-| `remove.go` | `remove <pkg>` | Delegates directly to `parser.RunRemove`; streams progress events |
+| `install.go` | `install <pkg>` | Delegates directly to `parser.RunInstall`; streams progress events; invalidates list cache on success |
+| `remove.go` | `remove <pkg>` | Delegates directly to `parser.RunRemove`; streams progress events; invalidates list cache on success |
 | `watch.go` | `watch` | Starts `cache.StartWatcher`; blocks on `signal.NotifyContext` until SIGINT/SIGTERM |
+| `refresh.go` | `refresh` | Invalidates list cache and forces a rebuild; emits `Type="list"` |
+| `clean.go` | `clean` | Wipes log and/or cache directories on demand; emits `Type="clean"` |
 
 #### The `Execute` safety net
 
@@ -207,23 +228,88 @@ tests override it to inject fake binaries without touching `PATH`.
 
 ### 2.6 Logger layer — `internal/logger`
 
-Wraps `go.uber.org/zap`. Provides two package-level singletons:
+Wraps `go.uber.org/zap`. Divided across two files:
+
+| File | Concern |
+| --- | --- |
+| `logger.go` | Package-level singletons, `Init`, `Sync`, `LogDir`, log-level control, session/request ID injection, `OpenBrewOutputLog` |
+| `rotation.go` | `dailyWriter` (size + date rotation), `MergeOldMonths`, file-path helpers |
+
+**Package-level singletons:**
 
 | Var | Type | Use |
 | --- | --- | --- |
 | `logger.Sugar` | `*zap.SugaredLogger` | Structured key-value logging in commands and cache |
-| `logger.Raw` | `*zap.Logger` | Raw structured logging in parser (not via sugar) |
+| `logger.Raw` | `*zap.Logger` | High-performance structured logging (parser hot path) |
+| `logger.Level` | `zapcore.Level` | Current resolved level; callers check before building expensive debug payloads |
 
-Log directory resolution (`resolveLogDir`) follows the same three-tier
-priority as `CacheDir`:
+**Log-level control** (`BREW_ENGINE_LOG_LEVEL`):
 
-1. `BREW_TUI_LOG_DIR` env var.
-2. `~/.local/state/brew-engine/`.
-3. `/tmp/brew-engine/` (fallback).
+| Value | Behaviour |
+| --- | --- |
+| `debug` | Full execution trace — every brew output line, every cache decision |
+| `info` (default) | Key markers only — start/end, cache hits, errors, build-mode detection |
+| `warn` / `error` | Progressively quieter |
+
+**Session/request correlation** — when `BREW_ENGINE_SESSION_ID` and/or
+`BREW_ENGINE_REQUEST_ID` are set, the values are injected as base fields
+into every Zap entry. This enables cross-layer correlation between the UI
+and engine without modifying any call sites.
+
+**Log directory resolution** (`resolveLogDir`, highest priority first):
+
+1. `BREW_ENGINE_LOG_DIR` — set by `internal/config` from the plist at startup.
+2. `BREW_TUI_LOG_DIR` — legacy override, honoured for backward compatibility.
+3. `~/.local/state/brew-engine/` — XDG Base Directory-compliant default.
+4. `/tmp/brew-engine/` — last-resort fallback when `os.UserHomeDir` fails.
 
 `logger.Sugar` is `nil` until `logger.Init()` is called. All callers
 guard: `if logger.Sugar != nil { … }` — the logger is always optional,
 never required for correct operation.
+
+---
+
+### 2.7 Config layer — `internal/config`
+
+Loads configuration once at process startup, before the logger or any
+subcommand runs.
+
+| File | Concern |
+| --- | --- |
+| `defaults.go` | Compiled-default constants: bundle ID, plist key names, env var names, fallback path values |
+| `config.go` | `Load()` entry point: resolve plist path → shell out to `plutil` → parse JSON → `os.Setenv` each key |
+
+**Priority chain (lowest → highest):**
+
+```
+compiled defaults  <  plist values  <  env vars already set in the process
+```
+
+`os.Setenv` is called only when the env var is **not already set**, so an
+operator or test that exports `BREW_ENGINE_LOG_DIR` before launching the
+binary always wins.
+
+**Plist location:** `~/Library/Preferences/com.mobilityquarks.brewexplorer.plist`
+
+**Key schema:**
+
+| Plist key | Env var set | Default value |
+| --- | --- | --- |
+| `LogDir` | `BREW_ENGINE_LOG_DIR` | `~/Library/Application Support/BrewExplorer/logs` |
+| `LogFileName` | `BREW_ENGINE_LOG_FILE_NAME` | `brew-engine.log` |
+| `BrewOutputLogFileName` | `BREW_ENGINE_BREW_OUTPUT_LOG_FILE_NAME` | `brew-output.log` |
+| `LogLevel` | `BREW_ENGINE_LOG_LEVEL` | `info` |
+| `CacheDir` | `BREW_TUI_CACHE_DIR` | `~/Library/Application Support/BrewExplorer/cache` |
+| `ListCacheFileName` | `BREW_TUI_LIST_CACHE_FILE` | `list.json` |
+| `InfoCacheDirName` | `BREW_TUI_INFO_CACHE_DIR` | `info` |
+| `BrewPath` | `BREW_PATH` | resolved via fallback chain (see below) |
+
+**Brew binary resolution** (first executable path wins):
+
+1. `BrewPath` plist key (absolute path, must be executable).
+2. `/opt/homebrew/bin/brew` (Apple Silicon default).
+3. `/usr/local/bin/brew` (Intel default).
+4. `exec.LookPath("brew")` (PATH search).
 
 ---
 
@@ -284,9 +370,22 @@ func StartWatcher(ctx context.Context, out io.Writer) error
 ```go
 var Sugar *zap.SugaredLogger
 var Raw   *zap.Logger
-func Init() error
+var Level zapcore.Level           // current resolved level
+
+func Init() error                 // open daily log; trigger monthly merge
 func Sync()
 func LogDir() string
+func DebugEnabled() bool          // guard for expensive debug payload construction
+func OpenBrewOutputLog(command string) *os.File   // open brew-output.log with header
+func WriteBrewOutputFooter(f *os.File, exitCode int)  // write [EXIT N] footer
+func MergeOldMonths(logDir string)  // merge prior-month daily files into monthly/
+```
+
+### `internal/config`
+
+```go
+func Load() error  // read plist via plutil, export env vars, resolve brew path
+func PlistPath() string  // ~/Library/Preferences/com.mobilityquarks.brewexplorer.plist
 ```
 
 ### `internal/parser`
@@ -317,6 +416,9 @@ filesystem:
 | `newFSWatcher` | `internal/cache` | `fsnotify.NewWatcher` | Simulate watcher creation failure |
 | `execBrewCommand` | `internal/parser` | `exec.Command` | Inject a fake `brew` binary |
 | `userHomeDir` | `internal/logger` | `os.UserHomeDir` | Simulate a missing home directory |
+| `currentDate` | `internal/logger` | `time.Now().Format(…)` | Control date in rotation tests |
+| `userHomeDir` | `internal/config` | `os.UserHomeDir` | Simulate a missing home directory |
+| `execPlutil` | `internal/config` | shells out to `plutil` | Inject fake plist JSON output |
 
 The pattern is consistent across all packages:
 
@@ -353,13 +455,14 @@ JSON object**.
 
 | `type` | `data` shape | Emitted by |
 | --- | --- | --- |
-| `"list"` | `NamesList` | `cmd/list.go` |
+| `"list"` | `NamesList` | `cmd/list.go`, `cmd/refresh.go` |
 | `"info"` | `FormulaInfo` or `CaskInfo` | `cmd/info.go` |
 | `"build_mode"` | `BuildModeData` | `internal/parser` (once per install, on first decisive `==>` line) |
 | `"progress"` | `ProgressStep` | `internal/parser` (during install/remove) |
 | `"done"` | `DoneData` (with `build_mode` field) | `internal/parser` (on exit 0) |
 | `"error"` | `DoneData` (with `build_mode` field, optional) | any layer on failure |
 | `"event"` | `CacheEvent` | `internal/cache` watcher on rebuild |
+| `"clean"` | `cleanResult` | `cmd/clean.go` on successful wipe |
 
 ### `is_stale` flag
 
@@ -470,7 +573,88 @@ brew-engine info wget
 
 ---
 
-## 7. Adding a New Subcommand
+## 7. Log Infrastructure — Rotation, Merge, and Raw Output
+
+### Directory layout
+
+```
+<LogDir>/
+├── daily/
+│   ├── brew-engine-2026-03-30.log      ← primary file for that day
+│   ├── brew-engine-2026-03-30.0.log    ← overflow #0 when primary exceeds 2 MB
+│   ├── brew-engine-2026-03-30.1.log    ← overflow #1, etc.
+│   └── brew-engine-2026-03-31.log      ← next day starts fresh
+├── monthly/
+│   └── brew-engine-2026-02.log         ← all February daily files merged here
+└── brew-output.log                     ← raw stdout/stderr from every brew subprocess
+```
+
+`<LogDir>` resolves as described in [section 2.6](#26-logger-layer--internallogger).
+
+### Daily rotation (`dailyWriter`)
+
+`dailyWriter` is a `zapcore.WriteSyncer` wrapping an `*os.File`. It is
+passed to `zapcore.Lock` so the underlying Zap core can use it safely from
+parallel goroutines.
+
+Two rotation triggers, both checked on every `Write` call:
+
+| Trigger | Action |
+| --- | --- |
+| Calendar day changed (`currentDate() != w.currentDate`) | `rotateToDate(newDate)` — probe for the highest existing suffix file for the new date (or create the base file if none exists) |
+| Write would exceed 2 MB (`currentSize + len(p) > maxLogFileSize`) | `rotateToNextSuffix()` — always create a **new** file with the next numeric suffix; never reopen the existing one |
+
+The two cases use separate methods to keep the logic explicit:
+
+- `rotateToDate` calls `openLogFileForDate`, which probes the directory and
+  advances the suffix only if the latest existing file for that date is
+  already full.
+- `rotateToNextSuffix` unconditionally increments `currentSuffix` and opens
+  a fresh file — it must never reopen the file that just filled up.
+
+### Monthly merge (`MergeOldMonths`)
+
+Called once inside `Init()`, before the daily writer opens today's file.
+
+```
+MergeOldMonths(logDir)
+    │
+    ├── scan <LogDir>/daily/ for files matching brew-engine-YYYY-MM-DD[.N].log
+    ├── group by YYYY-MM
+    ├── skip the current month
+    └── for each prior month:
+            ├── sort files chronologically
+            ├── append each file to <LogDir>/monthly/brew-engine-YYYY-MM.log
+            └── delete the daily files after a successful merge
+```
+
+Merge failures are silently skipped so that a permission error on an old
+log file never prevents the engine from starting.
+
+### Raw brew output (`brew-output.log`)
+
+Every `runStreamingCommand` call in `internal/parser` opens
+`<LogDir>/brew-output.log` in append mode via `logger.OpenBrewOutputLog`.
+The file format per invocation:
+
+```
+[2026-03-30T07:21:00Z] brew install wget
+==> Downloading https://…
+==> Pouring wget--2.4.1.arm64_sequoia.bottle.tar.gz
+[EXIT 0]
+```
+
+The raw lines (including ANSI escape sequences) are written here. This is
+the first place to look when diagnosing unexpected brew behaviour because it
+contains the exact bytes brew printed, with no transformation.
+
+The file is closed and the footer written after `cmd.Wait()` resolves the
+exit code, so partial writes cannot occur even if the engine is interrupted
+mid-install.
+
+---
+
+## 8. Adding a New Subcommand
 
 This is the complete checklist for adding, say, `brew-engine upgrade <pkg>`.
 
@@ -591,4 +775,5 @@ Add the new subcommand to:
 
 - The `// # Subcommands` godoc block in `cmd/root.go`.
 - The `Type taxonomy` table in `README.md` under **JSON Communication Contract**.
+- The `Type taxonomy` table in [section 5](#5-the-json-stdout-contract) of this document.
 - The **Build & Run** usage examples in `README.md`.
