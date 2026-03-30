@@ -122,7 +122,33 @@ func runInfo(_ *cobra.Command, args []string) error {
 // The returned bytes are suitable for writing directly to stdout and for
 // storing in the cache.
 func buildInfoResponse(pkg string) ([]byte, error) {
+	brewPath := os.Getenv("BREW_ENGINE_BREW_PATH")
+	if brewPath == "" {
+		brewPath = "brew"
+	}
+	cmdLine := strings.Join([]string{brewPath, "info", "--json=v2", pkg}, " ")
+
 	out, err := execBrewInfo(pkg)
+
+	// Append raw output to brew-output.log regardless of success/failure.
+	if f := logger.OpenBrewOutputLog(cmdLine); f != nil {
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+				if len(exitErr.Stderr) > 0 {
+					_, _ = f.Write(exitErr.Stderr)
+				}
+			} else {
+				exitCode = 1
+			}
+		} else if len(out) > 0 {
+			_, _ = f.Write(out)
+		}
+		logger.WriteBrewOutputFooter(f, exitCode)
+		_ = f.Close()
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("brew info failed for %q: %w", pkg, err)
 	}
