@@ -23,8 +23,8 @@ func TestCacheDir_EnvVar_Wins(t *testing.T) {
 func TestCacheDir_DefaultUnderHome(t *testing.T) {
 	t.Setenv(envCacheDir, "")
 	got := CacheDir()
-	if !strings.Contains(got, "brew-engine") {
-		t.Errorf("expected brew-engine in default path, got %s", got)
+	if !strings.Contains(got, "BrewExplorer") {
+		t.Errorf("expected BrewExplorer in default path, got %s", got)
 	}
 	if !strings.Contains(got, "cache") {
 		t.Errorf("expected cache in default path, got %s", got)

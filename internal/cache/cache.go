@@ -68,9 +68,9 @@ var execCommand = func(name string, args ...string) *exec.Cmd {
 // ─── Directory resolution ─────────────────────────────────────────────────────
 
 // CacheDir resolves the cache root directory using the following priority:
-//  1. BREW_TUI_CACHE_DIR environment variable (used verbatim).
-//  2. ~/.local/state/brew-engine/cache/ (XDG-compliant default).
-//  3. /tmp/brew-engine/cache/ (last-resort fallback when UserHomeDir fails).
+//  1. BREW_TUI_CACHE_DIR environment variable (set by internal/config at startup).
+//  2. ~/Library/Application Support/BrewExplorer/cache — macOS compiled default.
+//  3. /tmp/brew-engine/cache/ — last-resort fallback when UserHomeDir fails.
 func CacheDir() string {
 	if d := os.Getenv(envCacheDir); d != "" {
 		return d
@@ -79,7 +79,7 @@ func CacheDir() string {
 	if err != nil {
 		return filepath.Join("/tmp", "brew-engine", "cache")
 	}
-	return filepath.Join(home, ".local", "state", "brew-engine", "cache")
+	return filepath.Join(home, "Library", "Application Support", "BrewExplorer", "cache")
 }
 
 // ListCachePath returns the absolute path to the list.json cache file.
