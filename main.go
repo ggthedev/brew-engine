@@ -3,9 +3,13 @@
 // newline-delimited JSON on stdout.
 //
 // Startup sequence:
-//  1. Initialise the background file logger via [logger.Init].
-//  2. Delegate all CLI routing to [cmd.Execute], which dispatches to the
-//     appropriate Cobra subcommand (list, info, install, remove).
+//  1. Load configuration via [config.Load]: reads the application plist
+//     (~/Library/Preferences/com.mobilityquarks.brewexplorer.plist) via
+//     plutil, falls back to compiled defaults, and exports all values as
+//     environment variables for the rest of the process lifetime.
+//  2. Initialise the background file logger via [logger.Init].
+//  3. Delegate all CLI routing to [cmd.Execute], which dispatches to the
+//     appropriate Cobra subcommand (list, info, install, remove, refresh).
 //
 // stdout invariant: the only bytes ever written to stdout are complete,
 // newline-terminated [contract.Response] JSON objects. If logger
@@ -18,6 +22,7 @@ import (
 	"os"
 
 	"github.com/brewexplorer/brew-engine/cmd"
+	"github.com/brewexplorer/brew-engine/internal/config"
 	"github.com/brewexplorer/brew-engine/internal/logger"
 )
 
@@ -26,6 +31,11 @@ import (
 // called outside of an error path — every other exit is either through
 // normal Cobra completion or a JSON error payload written by a subcommand.
 func main() {
+	if err := config.Load(); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal: failed to load config: %s\n", err)
+		os.Exit(1)
+	}
+
 	if err := logger.Init(); err != nil {
 		// stdout is reserved for JSON only; logger failures go to stderr
 		fmt.Fprintf(os.Stderr, "fatal: failed to initialize logger: %s\n", err)

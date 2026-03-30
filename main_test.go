@@ -59,7 +59,7 @@ func TestMain_LoggerInitError_ExitsNonZero(t *testing.T) {
 		// Subprocess: point log dir to a file (not a dir) so Init fails.
 		tmpFile, _ := os.CreateTemp("", "brew-logger-fail-*")
 		tmpFile.Close()
-		os.Setenv("BREW_TUI_LOG_DIR", filepath.Join(tmpFile.Name(), "subdir"))
+		os.Setenv("BREW_ENGINE_LOG_DIR", filepath.Join(tmpFile.Name(), "subdir"))
 		main()
 		return
 	}
