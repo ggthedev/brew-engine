@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/brewexplorer/brew-engine/internal/cache"
@@ -40,8 +41,15 @@ var infoForceFlag bool
 // execBrewInfo is the function used to run `brew info --json=v2 <pkg>`.
 // It is a package-level variable so tests can inject a fake implementation
 // without spawning a real brew process or manipulating PATH.
+//
+// The brew executable is resolved from BREW_ENGINE_BREW_PATH (set by
+// internal/config at startup), falling back to the first "brew" on PATH.
 var execBrewInfo = func(pkg string) ([]byte, error) {
-	return exec.Command("brew", "info", "--json=v2", pkg).Output()
+	brewPath := os.Getenv("BREW_ENGINE_BREW_PATH")
+	if brewPath == "" {
+		brewPath = "brew"
+	}
+	return exec.Command(brewPath, "info", "--json=v2", pkg).Output()
 }
 
 // infoCmd is the Cobra command for `brew-engine info <package>`.
