@@ -654,24 +654,44 @@ log file never prevents the engine from starting.
 
 ### Raw brew output (`brew-output.log`)
 
-Every `runStreamingCommand` call in `internal/parser` opens
-`<LogDir>/brew-output.log` in append mode via `logger.OpenBrewOutputLog`.
-The file format per invocation:
+**Every command that invokes a brew subprocess** appends its raw output to
+`<LogDir>/brew-output.log` via `logger.OpenBrewOutputLog` /
+`logger.WriteBrewOutputFooter`. This is an **engine-wide invariant** — not
+just streaming commands.
+
+| Command / code path | Brew subprocess | Output captured |
+| --- | --- | --- |
+| `brew-engine install <pkg>` | `brew install <pkg>` | lines streamed via pipe (ANSI-stripped in Zap; raw in brew-output.log) |
+| `brew-engine remove <pkg>` | `brew uninstall <pkg>` | same as install |
+| `brew-engine list` (cache miss) | `brew list --formula` + `brew list --cask` | captured via `cmd.Output()` + `ExitError.Stderr` |
+| `brew-engine nuke [--brew\|--all]` | `brew cleanup -s --prune=all` | captured via `cmd.CombinedOutput()` |
+
+Commands that do **not** invoke brew directly (e.g. `info`, `clean`, `watch`)
+do not write to `brew-output.log`. `info` delegates to brew via a separate
+exec in `internal/cache`; if brew-output.log coverage for `info` is needed
+it should be added to `cache.ReadInfo` / the info fetch path.
+
+**Canonical file format** (one block per invocation, appended):
 
 ```
-[2026-03-30T07:21:00Z] brew install wget
+[2026-03-30T07:21:00Z] /usr/local/bin/brew install wget
 ==> Downloading https://…
 ==> Pouring wget--2.4.1.arm64_sequoia.bottle.tar.gz
 [EXIT 0]
+
+[2026-03-30T07:22:10Z] /usr/local/bin/brew list --formula
+git
+wget
+zsh
+[EXIT 0]
 ```
 
-The raw lines (including ANSI escape sequences) are written here. This is
-the first place to look when diagnosing unexpected brew behaviour because it
-contains the exact bytes brew printed, with no transformation.
+The full brew binary path (from `BREW_ENGINE_BREW_PATH`) is used in the
+header, not just `brew`, so the log is unambiguous on systems with multiple
+Homebrew installs.
 
-The file is closed and the footer written after `cmd.Wait()` resolves the
-exit code, so partial writes cannot occur even if the engine is interrupted
-mid-install.
+The file is closed and the footer written after the subprocess exits, so
+partial writes cannot occur even if the engine is interrupted mid-command.
 
 ---
 
