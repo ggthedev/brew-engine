@@ -16,6 +16,7 @@ package cmd
 import (
 	"os"
 
+	"github.com/brewexplorer/brew-engine/internal/cache"
 	"github.com/brewexplorer/brew-engine/internal/parser"
 	"github.com/spf13/cobra"
 )
@@ -42,5 +43,6 @@ func init() {
 // represented as a Type="error" JSON event written by the parser.
 func runRemove(_ *cobra.Command, args []string) error {
 	parser.RunRemove(args[0], os.Stdout)
+	_ = cache.InvalidateList()
 	return nil
 }
