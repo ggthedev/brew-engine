@@ -27,14 +27,14 @@ func TestResolveLogDir_EnvVar(t *testing.T) {
 	}
 }
 
-func TestResolveLogDir_DefaultContainsBrewEngine(t *testing.T) {
+func TestResolveLogDir_DefaultContainsBrewExplorer(t *testing.T) {
 	t.Setenv(envLogDir, "")
 	got := resolveLogDir()
 	if got == "" {
 		t.Fatal("resolveLogDir returned empty string")
 	}
-	if !strings.Contains(got, "brew-engine") {
-		t.Errorf("expected brew-engine in default path, got %s", got)
+	if !strings.Contains(got, "BrewExplorer") {
+		t.Errorf("expected BrewExplorer in default path, got %s", got)
 	}
 }
 

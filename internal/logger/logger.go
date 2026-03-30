@@ -204,7 +204,7 @@ func resolveLogDir() string {
 	if err != nil {
 		return filepath.Join("/tmp", "brew-engine")
 	}
-	return filepath.Join(home, ".local", "state", "brew-engine")
+	return filepath.Join(home, "Library", "Application Support", "BrewExplorer", "logs")
 }
 
 // resolveLogLevel parses BREW_ENGINE_LOG_LEVEL and returns the corresponding

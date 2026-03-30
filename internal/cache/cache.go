@@ -217,8 +217,38 @@ func BuildAndCacheList() ([]byte, error) {
 
 // fetchNames runs `brew list <flag>` and returns the whitespace-separated
 // package names as a string slice. flag must be "--formula" or "--cask".
+//
+// The brew executable is resolved from BREW_ENGINE_BREW_PATH (set by
+// internal/config at startup), falling back to the first "brew" on PATH.
+// Raw stdout and stderr are appended to brew-output.log for audit purposes.
 func fetchNames(flag string) ([]string, error) {
-	out, err := execCommand("brew", "list", flag).Output()
+	brewPath := os.Getenv("BREW_ENGINE_BREW_PATH")
+	if brewPath == "" {
+		brewPath = "brew"
+	}
+	cmd := execCommand(brewPath, "list", flag)
+	out, err := cmd.Output()
+
+	// Append raw output to brew-output.log regardless of success/failure.
+	if f := logger.OpenBrewOutputLog(brewPath + " list " + flag); f != nil {
+		if len(out) > 0 {
+			_, _ = f.Write(out)
+		}
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+				if len(exitErr.Stderr) > 0 {
+					_, _ = f.Write(exitErr.Stderr)
+				}
+			} else {
+				exitCode = 1
+			}
+		}
+		logger.WriteBrewOutputFooter(f, exitCode)
+		_ = f.Close()
+	}
+
 	if err != nil {
 		return nil, err
 	}
