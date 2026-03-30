@@ -117,8 +117,21 @@ No raw text ever reaches stdout — only newline-terminated JSON objects.
 
 ## Build & Run
 
+### Makefile targets
+
+| Target | Output | Use case |
+|---|---|---|
+| `make` / `make build` | `build/brew-engine` | Native arch — fast dev cycle |
+| `make build-arm64` | `build/brew-engine-arm64` | Apple Silicon native binary |
+| `make build-amd64` | `build/brew-engine-amd64` | Intel Mac native binary |
+| `make build-universal` | `build/brew-engine-universal` | Fat binary (both arches via `lipo`) — **use for app bundle distribution** |
+| `make test` | — | Run full test suite |
+| `make clean` | — | Remove `build/` directory |
+
+> `build-universal` requires `lipo` (included with Xcode Command Line Tools).
+
 ```bash
-# Fetch dependencies and build
+# Fetch dependencies and build (native arch)
 make
 
 # Or manually
