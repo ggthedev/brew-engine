@@ -13,6 +13,7 @@ import (
 func TestExecute_KnownSubcommand_DoesNotPanic(t *testing.T) {
 	// Override os.Args so Cobra sees "brew-engine list"
 	// Use a fake brew so list completes cleanly.
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 	makeFakeBrew(t, brewListScript())
 
 	old := os.Args

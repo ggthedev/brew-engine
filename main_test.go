@@ -16,6 +16,9 @@ import (
 func TestMain_HappyPath(t *testing.T) {
 	// Set up a writable log directory.
 	t.Setenv("BREW_TUI_LOG_DIR", t.TempDir())
+	// Isolate the cache so the fake-brew output does not persist to the real
+	// ~/Library/Application Support/BrewExplorer/cache directory.
+	t.Setenv("BREW_TUI_CACHE_DIR", t.TempDir())
 
 	// Provide a fake brew that satisfies the list subcommand.
 	brewDir := t.TempDir()
