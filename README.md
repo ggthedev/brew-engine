@@ -57,19 +57,23 @@ Every line written to stdout is a `contract.Response`:
 
 | type | trigger | `data` shape |
 |---|---|---|
-| `list` | `brew-engine list` | `NamesList` |
+| `list` | `brew-engine list` / `brew-engine refresh` | `NamesList` — `{formulae:["..."], casks:["..."], total:N}` |
 | `info` | `brew-engine info <pkg>` | `FormulaInfo` or `CaskInfo` |
 | `build_mode` | during `install`, on first decisive `==>` line | `BuildModeData` |
 | `progress` | during `install` / `remove` | `ProgressStep` |
 | `done` | install/remove finished (exit 0) | `DoneData` |
-| `error` | any failure | `DoneData` (on exit ≠ 0) or omitted |
+| `error` | any failure | `DoneData` (exit ≠ 0) or omitted |
 | `event` | `brew-engine watch` detects external mutation | `CacheEvent` |
+| `clean` | `brew-engine clean` | `cleanResult` — dirs wiped |
+| `nuke` | `brew-engine nuke [--brew\|--app\|--all]` | `NukeData` — flags indicating what was cleaned |
+| `brew_not_found` | startup, when Homebrew cannot be located | `BrewNotFoundData` — checked paths; process exits 2 |
+| `fatal` | startup, config or logger init failure | no `data`; `error` field contains detail; process exits 1 |
 
 ### Example responses
 
 **list**
 ```json
-{"success":true,"type":"list","data":{"formulae":[{"name":"wget","full_name":"wget","tap":"homebrew/core","desc":"Internet file retriever","homepage":"https://www.gnu.org/software/wget/","version":"1.21.4","installed_version":"1.21.4","installed":true,"outdated":false,"pinned":false}],"casks":[],"total":1}}
+{"success":true,"type":"list","data":{"formulae":["git","wget","zsh"],"casks":["firefox","iterm2"],"total":5}}
 ```
 
 **progress** (streamed line-by-line during install)
@@ -98,13 +102,16 @@ Every line written to stdout is a `contract.Response`:
 
 ## Logging
 
-All raw `brew` output (stdout + stderr, ANSI stripped) is written to a
-structured JSON log file. No raw text ever reaches stdout.
+Two log files are maintained under `<LogDir>` (default: `~/Library/Application Support/BrewExplorer/logs`):
 
-| Config | Value |
-|---|---|
-| Env var | `BREW_TUI_LOG_DIR` |
-| Default path | `~/.local/state/brew-engine/brew-engine.log` |
+| File | Contents | Env var override |
+|---|---|---|
+| `brew-engine.log` | Structured Zap entries — cache decisions, lifecycle events, errors | `BREW_ENGINE_LOG_DIR` |
+| `brew-output.log` | Raw stdout+stderr from **every** `brew` subprocess invocation | same dir |
+
+The log directory resolves from (highest priority first): `BREW_ENGINE_LOG_DIR` → `BREW_TUI_LOG_DIR` (legacy) → `~/Library/Application Support/BrewExplorer/logs` → `/tmp/brew-engine/`.
+
+No raw text ever reaches stdout — only newline-terminated JSON objects.
 
 ---
 
@@ -119,10 +126,17 @@ go mod tidy
 go build -o build/brew-engine .
 
 # Usage
-./build/brew-engine list
-./build/brew-engine info wget
-./build/brew-engine install wget
-./build/brew-engine remove wget
+./build/brew-engine list                  # list installed formulae + casks (NamesList)
+./build/brew-engine refresh               # force cache rebuild, emit fresh list
+./build/brew-engine info wget             # detailed info (stale-while-revalidate)
+./build/brew-engine install wget          # stream progress → done/error
+./build/brew-engine remove wget           # stream progress → done/error
+./build/brew-engine watch                 # block; emit "event" on external mutations
+./build/brew-engine clean --logs          # wipe log directory
+./build/brew-engine clean --cache         # wipe cache directory
+./build/brew-engine nuke                  # brew cleanup -s --prune=all (default: --brew)
+./build/brew-engine nuke --app            # wipe app cache directory
+./build/brew-engine nuke --all            # brew cleanup + wipe app cache
 ```
 
 ---
@@ -131,24 +145,34 @@ go build -o build/brew-engine .
 
 ```
 brew-engine/
-├── main.go                     # Entry point: init logger → cmd.Execute()
+├── main.go                     # Entry point: config.Load → logger.Init → brew check → cmd.Execute
 ├── go.mod
 ├── Makefile
+├── Docs/
+│   ├── ARCHITECTURE.md         # Full internal reference
+│   └── SWIFT_INTEGRATION.md    # Swift macOS frontend integration guide
 ├── cmd/
 │   ├── root.go                 # Cobra root; SilenceErrors/Usage; Execute()
 │   ├── list.go                 # Cache-first list; fallback to BuildAndCacheList
-│   ├── info.go                 # Stale-while-revalidate; --force flag
-│   ├── install.go              # delegates to parser.RunInstall
-│   ├── remove.go               # delegates to parser.RunRemove
-│   └── watch.go                # fsnotify watcher; blocks until SIGINT/SIGTERM
+│   ├── refresh.go              # Invalidate + rebuild list cache; emits Type="list"
+│   ├── info.go                 # Stale-while-revalidate 24h TTL; --force flag
+│   ├── install.go              # Delegates to parser.RunInstall; streams progress
+│   ├── remove.go               # Delegates to parser.RunRemove; streams progress
+│   ├── watch.go                # fsnotify watcher; blocks until SIGINT/SIGTERM
+│   ├── clean.go                # Wipe log/cache dirs on demand; emits Type="clean"
+│   └── nuke.go                 # brew cleanup + app cache wipe; emits Type="nuke"
 └── internal/
     ├── cache/
     │   ├── cache.go            # CacheDir, Read/Write/Invalidate, BuildAndCacheList
     │   └── watcher.go          # StartWatcher, runWatcher (debounce), rebuildListCache
+    ├── config/
+    │   ├── config.go           # Load(): plist → plutil → os.Setenv; priority chain
+    │   └── defaults.go         # Compiled-default constants (paths, env var names)
     ├── contract/
     │   └── types.go            # All JSON structs + WriteJSON helper
     ├── logger/
-    │   └── logger.go           # Zap file logger, BREW_TUI_LOG_DIR
+    │   ├── logger.go           # Zap init, brew-output.log helpers, session correlation
+    │   └── rotation.go         # dailyWriter (size+date rotation), MergeOldMonths
     └── parser/
         └── parser.go           # bufio.Scanner, ANSI strip, build-mode detection, progress events
 ```
