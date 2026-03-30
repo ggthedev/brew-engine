@@ -65,6 +65,30 @@ func PlistPath() (string, error) {
 	return plistFilePath(home), nil
 }
 
+// ResolvedBrewPath returns the Homebrew executable path that was resolved
+// during Load(). An empty string means brew was not found at any candidate
+// location; the engine should not proceed in that case.
+func ResolvedBrewPath() string {
+	return os.Getenv(EnvBrewPath)
+}
+
+// IsBrewExecutable reports whether path is a regular executable file.
+// Callers use this to verify that a pre-set BREW_ENGINE_BREW_PATH env var
+// actually points to a usable binary.
+func IsBrewExecutable(path string) bool {
+	return isExecutable(path)
+}
+
+// BrewCandidatePaths returns the well-known Homebrew install locations that
+// are checked during Load(). Included in the brew_not_found JSON payload so
+// the frontend can show a helpful diagnostic without guessing.
+func BrewCandidatePaths() []string {
+	return []string{
+		"/opt/homebrew/bin/brew",
+		"/usr/local/bin/brew",
+	}
+}
+
 // ─── Internal ─────────────────────────────────────────────────────────────────
 
 // plistFilePath returns ~/Library/Preferences/com.mobilityquarks.brewexplorer.plist

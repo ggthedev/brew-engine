@@ -48,6 +48,9 @@ import (
 //   - "build_mode" — Data is [BuildModeData]; emitted once per install
 //     operation, as soon as the parser determines whether Homebrew is
 //     pouring a pre-compiled bottle or compiling from source.
+//   - "brew_not_found" — Data is [BrewNotFoundData]; emitted by main before
+//     any subcommand runs when Homebrew cannot be located on disk.
+//     The process exits with code 2 immediately after this event.
 type Response struct {
 	// Success indicates whether the underlying brew operation succeeded.
 	// When false, Error is guaranteed to be non-empty.
@@ -55,7 +58,7 @@ type Response struct {
 
 	// Type identifies the shape of the Data field. See the list of valid
 	// values in the type-level documentation.
-	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error" | "event" | "build_mode"
+	Type string `json:"type"` // "list" | "info" | "progress" | "done" | "error" | "event" | "build_mode" | "brew_not_found"
 
 	// IsStale is true when the response was served from an expired cache
 	// entry. A fresh response will follow on stdout once the background
@@ -329,6 +332,18 @@ type ProgressStep struct {
 	// Step is the full text of the "==>" header line, stripped of all ANSI
 	// escape sequences (e.g. "==> Downloading https://...").
 	Step string `json:"step"`
+}
+
+// BrewNotFoundData is the Data payload carried by a [Response] with
+// Type="brew_not_found". It is emitted by main() before logger or subcommand
+// initialisation when Homebrew cannot be located at any standard path.
+//
+// The frontend should present an actionable error: e.g. a link to
+// https://brew.sh or instructions to set the BrewPath plist key.
+type BrewNotFoundData struct {
+	// CheckedPaths lists the well-known locations that were probed, in
+	// priority order, before giving up. Useful for diagnostics.
+	CheckedPaths []string `json:"checked_paths"`
 }
 
 // DoneData is the final Data payload emitted after a state-changing brew

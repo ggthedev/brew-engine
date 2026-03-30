@@ -8,13 +8,22 @@
 //     plutil, falls back to compiled defaults, and exports all values as
 //     environment variables for the rest of the process lifetime.
 //  2. Initialise the background file logger via [logger.Init].
-//  3. Delegate all CLI routing to [cmd.Execute], which dispatches to the
+//  3. Verify Homebrew is present and executable. The result is always logged
+//     to the audit trail (Zap). If brew is absent, emit a [contract.Response]
+//     with Type="brew_not_found" to stdout and exit 2.
+//  4. Delegate all CLI routing to [cmd.Execute], which dispatches to the
 //     appropriate Cobra subcommand (list, info, install, remove, refresh).
+//
+// Exit codes:
+//
+//	0 — success
+//	1 — config or logger initialisation failure (written to stderr only)
+//	2 — Homebrew not found (JSON written to stdout; also logged to audit file)
 //
 // stdout invariant: the only bytes ever written to stdout are complete,
 // newline-terminated [contract.Response] JSON objects. If logger
-// initialisation fails, the diagnostic is written to stderr only, and the
-// process exits with code 1 — the stdout channel is never contaminated.
+// initialisation fails, the diagnostic is written to stderr only — the
+// stdout channel is never contaminated.
 package main
 
 import (
@@ -23,6 +32,7 @@ import (
 
 	"github.com/brewexplorer/brew-engine/cmd"
 	"github.com/brewexplorer/brew-engine/internal/config"
+	"github.com/brewexplorer/brew-engine/internal/contract"
 	"github.com/brewexplorer/brew-engine/internal/logger"
 )
 
@@ -42,6 +52,29 @@ func main() {
 		os.Exit(1)
 	}
 	defer logger.Sync()
+
+	// Audit: log the brew check outcome before any subcommand runs.
+	// Logger is live here, so every start-up is traceable in the log file.
+	brewPath := config.ResolvedBrewPath()
+	if !config.IsBrewExecutable(brewPath) {
+		if logger.Sugar != nil {
+			logger.Sugar.Errorw("brew not found",
+				"checked_paths", config.BrewCandidatePaths(),
+			)
+		}
+		contract.WriteJSON(os.Stdout, contract.Response{
+			Success: false,
+			Type:    "brew_not_found",
+			Error:   "Homebrew is not installed or not found at any known location",
+			Data: contract.BrewNotFoundData{
+				CheckedPaths: config.BrewCandidatePaths(),
+			},
+		})
+		os.Exit(2)
+	}
+	if logger.Sugar != nil {
+		logger.Sugar.Infow("brew verified", "path", brewPath)
+	}
 
 	cmd.Execute()
 }
