@@ -71,7 +71,7 @@ step-by-step guide to adding a new subcommand.
 ┌──────────────────────────────────────────────────────────┐
 │                     cmd/  (Cobra)                        │
 │  root.go  list.go  info.go  install.go  remove.go        │
-│           watch.go  refresh.go  clean.go                 │
+│  watch.go  refresh.go  clean.go  nuke.go                 │
 └──────┬──────────────────────────────────────────┬────────┘
        │ uses                                     │ uses
        ▼                                          ▼
@@ -133,8 +133,8 @@ distinct from all other exits:
 | Exit code | Meaning | Channel |
 | --- | --- | --- |
 | 0 | Success | — |
-| 1 | Config or logger init failure | `stderr` only |
-| 2 | Homebrew not found | `stdout` JSON + Zap log |
+| 1 | Config or logger init failure | `stdout` JSON (`type:"fatal"`) + `stderr` plain text |
+| 2 | Homebrew not found | `stdout` JSON (`type:"brew_not_found"`) + Zap log |
 
 `config.Load()` runs first so that every env var the logger and commands
 read (`BREW_ENGINE_LOG_DIR`, `BREW_ENGINE_LOG_LEVEL`, `BREW_TUI_CACHE_DIR`,
@@ -189,7 +189,7 @@ Two files, two concerns:
 **Cache directory resolution** (`CacheDir`):
 
 1. `BREW_TUI_CACHE_DIR` env var (verbatim, no tilde expansion).
-2. `~/.local/state/brew-engine/cache/` (XDG-compliant default).
+2. `~/Library/Application Support/BrewExplorer/cache` — macOS compiled default.
 3. `/tmp/brew-engine/cache/` (fallback when `os.UserHomeDir` fails).
 
 **Namespace layout on disk:**
@@ -279,7 +279,7 @@ and engine without modifying any call sites.
 
 1. `BREW_ENGINE_LOG_DIR` — set by `internal/config` from the plist at startup.
 2. `BREW_TUI_LOG_DIR` — legacy override, honoured for backward compatibility.
-3. `~/.local/state/brew-engine/` — XDG Base Directory-compliant default.
+3. `~/Library/Application Support/BrewExplorer/logs` — macOS compiled default.
 4. `/tmp/brew-engine/` — last-resort fallback when `os.UserHomeDir` fails.
 
 `logger.Sugar` is `nil` until `logger.Init()` is called. All callers
@@ -319,9 +319,9 @@ binary always wins.
 | `BrewOutputLogFileName` | `BREW_ENGINE_BREW_OUTPUT_LOG_FILE_NAME` | `brew-output.log` |
 | `LogLevel` | `BREW_ENGINE_LOG_LEVEL` | `info` |
 | `CacheDir` | `BREW_TUI_CACHE_DIR` | `~/Library/Application Support/BrewExplorer/cache` |
-| `ListCacheFileName` | `BREW_TUI_LIST_CACHE_FILE` | `list.json` |
-| `InfoCacheDirName` | `BREW_TUI_INFO_CACHE_DIR` | `info` |
-| `BrewPath` | `BREW_PATH` | resolved via fallback chain (see below) |
+| `ListCacheFileName` | `BREW_ENGINE_LIST_CACHE_FILE_NAME` | `list.json` |
+| `InfoCacheDirName` | `BREW_ENGINE_INFO_CACHE_DIR_NAME` | `info` |
+| `BrewPath` | `BREW_ENGINE_BREW_PATH` | resolved via fallback chain (see below) |
 
 **Brew binary resolution** (first executable path wins):
 
@@ -434,6 +434,8 @@ filesystem:
 | `userHomeDir` | `internal/cache` | `os.UserHomeDir` | Simulate a missing home directory |
 | `newFSWatcher` | `internal/cache` | `fsnotify.NewWatcher` | Simulate watcher creation failure |
 | `execBrewCommand` | `internal/parser` | `exec.Command` | Inject a fake `brew` binary |
+| `execBrewInfo` | `cmd` (info.go) | `exec.Command` | Inject fake `brew info` JSON output |
+| `execNukeCommand` | `cmd` (nuke.go) | `exec.Command` | Inject fake `brew cleanup` response |
 | `userHomeDir` | `internal/logger` | `os.UserHomeDir` | Simulate a missing home directory |
 | `currentDate` | `internal/logger` | `time.Now().Format(…)` | Control date in rotation tests |
 | `userHomeDir` | `internal/config` | `os.UserHomeDir` | Simulate a missing home directory |
@@ -484,6 +486,7 @@ JSON object**.
 | `"clean"` | `cleanResult` | `cmd/clean.go` on successful wipe |
 | `"brew_not_found"` | `BrewNotFoundData` | `main()` pre-subcommand brew check; process exits 2 after this event |
 | `"nuke"` | `NukeData` | `cmd/nuke.go`; `brew_exit_code` reflects brew cleanup's exit status |
+| `"fatal"` | none | `main()` on config or logger init failure; `error` field carries detail; process exits 1 |
 
 ### `is_stale` flag
 
@@ -661,15 +664,15 @@ just streaming commands.
 
 | Command / code path | Brew subprocess | Output captured |
 | --- | --- | --- |
-| `brew-engine install <pkg>` | `brew install <pkg>` | lines streamed via pipe (ANSI-stripped in Zap; raw in brew-output.log) |
+| `brew-engine install <pkg>` | `brew install -v <pkg>` | lines streamed via pipe (ANSI-stripped in Zap; raw in brew-output.log) |
 | `brew-engine remove <pkg>` | `brew uninstall <pkg>` | same as install |
+| `brew-engine info <pkg>` (cache miss or stale) | `brew info --json=v2 <pkg>` | captured via `cmd.Output()` + `ExitError.Stderr` |
 | `brew-engine list` (cache miss) | `brew list --formula` + `brew list --cask` | captured via `cmd.Output()` + `ExitError.Stderr` |
+| `brew-engine refresh` | `brew list --formula` + `brew list --cask` | same as list |
 | `brew-engine nuke [--brew\|--all]` | `brew cleanup -s --prune=all` | captured via `cmd.CombinedOutput()` |
 
-Commands that do **not** invoke brew directly (e.g. `info`, `clean`, `watch`)
-do not write to `brew-output.log`. `info` delegates to brew via a separate
-exec in `internal/cache`; if brew-output.log coverage for `info` is needed
-it should be added to `cache.ReadInfo` / the info fetch path.
+Commands that do **not** invoke brew directly (`clean`, `watch`) do not write
+to `brew-output.log`.
 
 **Canonical file format** (one block per invocation, appended):
 
